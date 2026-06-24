@@ -77,6 +77,7 @@ async function main() {
     db.papers.push({
       ...duplicateSource,
       id: db.nextId++,
+      doi: `${duplicateSource.doi})`,
       citekey: `${duplicateSource.citekey}dup`,
       addedAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),

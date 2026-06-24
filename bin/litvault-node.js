@@ -8,7 +8,7 @@ const https = require("node:https");
 const os = require("node:os");
 const path = require("node:path");
 
-const VERSION = "0.1.6";
+const VERSION = "0.1.7";
 const FALLBACK_LIBRARY = path.join(os.homedir(), "litvault-library");
 const DOI_RE = /\b(10\.\d{4,9}\/[-._;()/:A-Z0-9]+)/i;
 const DOI_GLOBAL_RE = /\b(10\.\d{4,9}\/[-._;()/:A-Z0-9]+)/gi;
@@ -329,7 +329,7 @@ function buildDbIndexes(db) {
   const byPdfSha256 = new Map();
   const byZotero = new Map();
   for (const paper of db.papers || []) {
-    if (paper.doi) byDoi.set(paper.doi, paper);
+    if (paper.doi) byDoi.set(normalizeDoi(paper.doi), paper);
     if (paper.pdfSha256) byPdfSha256.set(paper.pdfSha256, paper);
     if (paper.zoteroKey) byZotero.set(`${paper.zoteroLibrary || ""}:${paper.zoteroKey}`, paper);
   }
@@ -551,7 +551,7 @@ function uniqueValues(values) {
 async function findPaper(library, query) {
   const db = await readDb(library);
   const normalized = normalizeDoi(query);
-  return db.papers.find(p => p.doi === normalized)
+  return db.papers.find(p => p.doi && normalizeDoi(p.doi) === normalized)
     || db.papers.find(p => p.citekey === query)
     || (/^\d+$/.test(query) ? db.papers.find(p => p.id === Number(query)) : null)
     || db.papers.find(p => (p.title || "").toLowerCase().includes(String(query).toLowerCase()));
@@ -630,7 +630,10 @@ async function computeStats(library, db) {
     for (const tag of paper.tags || []) tagCounts.set(tag, (tagCounts.get(tag) || 0) + 1);
     if (paper.type) typeCounts.set(paper.type, (typeCounts.get(paper.type) || 0) + 1);
     if (paper.venue) venueCounts.set(paper.venue, (venueCounts.get(paper.venue) || 0) + 1);
-    if (paper.doi) doiCounts.set(paper.doi, (doiCounts.get(paper.doi) || 0) + 1);
+    if (paper.doi) {
+      const normalizedDoi = normalizeDoi(paper.doi);
+      doiCounts.set(normalizedDoi, (doiCounts.get(normalizedDoi) || 0) + 1);
+    }
     if (paper.pdfSha256) pdfHashCounts.set(paper.pdfSha256, (pdfHashCounts.get(paper.pdfSha256) || 0) + 1);
   }
 
@@ -708,7 +711,7 @@ function printStats(stats) {
 function paperBrief(paper) {
   return {
     id: paper.id,
-    doi: paper.doi || null,
+    doi: paper.doi ? normalizeDoi(paper.doi) : null,
     citekey: paper.citekey || null,
     title: paper.title || "",
     year: paper.year || null,
@@ -747,7 +750,7 @@ function duplicateGroupsBy(records, keyFn) {
 function duplicatePdfGroups(db) {
   return duplicateGroupsBy(db.papers || [], paper => paper.pdfSha256)
     .map(group => {
-      const doiValues = uniqueValues(group.items.map(paper => paper.doi).filter(Boolean));
+      const doiValues = uniqueValues(group.items.map(paper => paper.doi ? normalizeDoi(paper.doi) : null).filter(Boolean));
       return {
         pdfSha256: group.key,
         safeToMerge: doiValues.length <= 1,
@@ -765,7 +768,7 @@ function duplicatePdfGroups(db) {
 function buildDoctorReport(library, db) {
   const papers = db.papers || [];
   const duplicatePdfHashGroups = duplicatePdfGroups(db);
-  const duplicateDoiGroups = duplicateGroupsBy(papers, paper => paper.doi)
+  const duplicateDoiGroups = duplicateGroupsBy(papers, paper => paper.doi ? normalizeDoi(paper.doi) : null)
     .map(group => ({
       doi: group.key,
       records: group.items.slice().sort((a, b) => a.id - b.id).map(paperBrief),
@@ -824,6 +827,7 @@ function printDoctorReport(report) {
 
 function mergeRecordIntoCanonical(canonical, duplicate) {
   canonical.doi = canonical.doi || duplicate.doi || null;
+  if (canonical.doi) canonical.doi = normalizeDoi(canonical.doi);
   canonical.title = canonical.title || duplicate.title || "";
   canonical.authors = canonical.authors?.length ? canonical.authors : duplicate.authors || [];
   canonical.year = canonical.year || duplicate.year || null;
