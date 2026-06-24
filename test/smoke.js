@@ -97,6 +97,19 @@ async function main() {
       throw new Error("dedupe apply did not remove one record");
     }
 
+    const repairDb = JSON.parse(await fsp.readFile(manifest, "utf8"));
+    repairDb.papers.find(paper => paper.doi === "10.9999/metadata-only").doi = "not-a-doi";
+    repairDb.papers.find(paper => paper.doi === "10.5678/second").doi = "https://doi.org/10.5678/second)";
+    await fsp.writeFile(manifest, JSON.stringify(repairDb, null, 2) + "\n", "utf8");
+    const repairPreview = run(["--library", library, "repair-doi"]);
+    if (!repairPreview.includes("Normalizable DOI values: 1") || !repairPreview.includes("Invalid DOI values to clear: 1")) {
+      throw new Error("repair-doi dry-run did not report expected DOI fixes");
+    }
+    const repairApply = run(["--library", library, "repair-doi", "--apply"]);
+    if (!repairApply.includes("Applied: normalized 1; cleared 1")) {
+      throw new Error("repair-doi apply did not apply expected DOI fixes");
+    }
+
     const search = run(["--library", library, "search", "smoke"]);
     if (!search.includes("10.1234/example")) throw new Error("search output missing DOI");
 

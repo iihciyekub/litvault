@@ -8,10 +8,11 @@ const https = require("node:https");
 const os = require("node:os");
 const path = require("node:path");
 
-const VERSION = "0.1.7";
+const VERSION = "0.1.8";
 const FALLBACK_LIBRARY = path.join(os.homedir(), "litvault-library");
 const DOI_RE = /\b(10\.\d{4,9}\/[-._;()/:A-Z0-9]+)/i;
 const DOI_GLOBAL_RE = /\b(10\.\d{4,9}\/[-._;()/:A-Z0-9]+)/gi;
+const STRICT_DOI_RE = /^10\.\d{4,9}\/[-._;()/:A-Z0-9]+$/i;
 
 function usage() {
   return `litvault ${VERSION}
@@ -26,6 +27,7 @@ Usage:
   litvault [--library DIR] list [--limit N]
   litvault [--library DIR] stats [--json]
   litvault [--library DIR] doctor [--json]
+  litvault [--library DIR] repair-doi [--apply] [--json]
   litvault [--library DIR] dedupe [--apply] [--json]
   litvault [--library DIR] export-bib [QUERY...] [--file queries.txt] [--out FILE]
   litvault [--library DIR] sync zotero [--dry-run] [--no-copy-pdfs]
@@ -43,6 +45,7 @@ Examples:
   litvault import-dois --file dois.txt
   litvault stats
   litvault doctor
+  litvault repair-doi --apply
   litvault dedupe --apply
   litvault get 10.1038/s41586-020-2649-2 10.1145/3510003.3510101 --to ~/Desktop/refs
   litvault export-bib 10.1038/s41586-020-2649-2 --out refs.bib
@@ -122,6 +125,10 @@ function normalizeDoi(value) {
   }
 
   return doi.toLowerCase();
+}
+
+function isValidDoi(value) {
+  return STRICT_DOI_RE.test(normalizeDoi(value));
 }
 
 function findDoiInText(text) {
@@ -765,6 +772,86 @@ function duplicatePdfGroups(db) {
     .sort((a, b) => b.records.length - a.records.length || a.pdfSha256.localeCompare(b.pdfSha256));
 }
 
+function planRepairDoi(db) {
+  const normalize = [];
+  const clear = [];
+  for (const paper of db.papers || []) {
+    if (!paper.doi) continue;
+    const raw = String(paper.doi);
+    const normalized = normalizeDoi(raw);
+    if (normalized && isValidDoi(normalized)) {
+      if (raw !== normalized) {
+        normalize.push({
+          record: paperBrief(paper),
+          from: raw,
+          to: normalized,
+        });
+      }
+    } else {
+      clear.push({
+        record: paperBrief(paper),
+        from: raw,
+        to: null,
+      });
+    }
+  }
+  return { normalize, clear };
+}
+
+async function applyRepairDoi(library, db, plan) {
+  const byId = new Map((db.papers || []).map(paper => [paper.id, paper]));
+  let normalized = 0;
+  let cleared = 0;
+  for (const item of plan.normalize) {
+    const paper = byId.get(item.record.id);
+    if (!paper) continue;
+    paper.doi = item.to;
+    paper.updatedAt = nowIso();
+    normalized++;
+  }
+  for (const item of plan.clear) {
+    const paper = byId.get(item.record.id);
+    if (!paper) continue;
+    paper.doi = null;
+    paper.updatedAt = nowIso();
+    cleared++;
+  }
+  let backup = null;
+  if (normalized || cleared) {
+    backup = await backupManifest(library);
+    await writeDb(library, db);
+  }
+  return { backup, normalized, cleared };
+}
+
+function printRepairDoiPlan(plan, applied = null) {
+  console.log(`Normalizable DOI values: ${plan.normalize.length}`);
+  console.log(`Invalid DOI values to clear: ${plan.clear.length}`);
+  if (applied) {
+    console.log(`Applied: normalized ${applied.normalized}; cleared ${applied.cleared}`);
+    if (applied.backup) console.log(`Backup: ${applied.backup}`);
+  } else {
+    console.log("Dry run: no changes written. Use --apply to normalize valid DOI values and clear invalid DOI values.");
+  }
+
+  if (plan.normalize.length) {
+    console.log("");
+    console.log("Normalize preview:");
+    for (const item of plan.normalize.slice(0, 10)) {
+      console.log(`  #${item.record.id} ${item.from} -> ${item.to}`);
+    }
+    if (plan.normalize.length > 10) console.log(`  ... ${plan.normalize.length - 10} more records`);
+  }
+  if (plan.clear.length) {
+    console.log("");
+    console.log("Clear preview:");
+    for (const item of plan.clear.slice(0, 10)) {
+      console.log(`  #${item.record.id} ${item.from}`);
+    }
+    if (plan.clear.length > 10) console.log(`  ... ${plan.clear.length - 10} more records`);
+  }
+}
+
 function buildDoctorReport(library, db) {
   const papers = db.papers || [];
   const duplicatePdfHashGroups = duplicatePdfGroups(db);
@@ -778,6 +865,7 @@ function buildDoctorReport(library, db) {
     .map(paperBrief);
   const recordsWithoutPdf = papers.filter(paper => !paper.pdfPath).map(paperBrief);
   const recordsWithoutDoi = papers.filter(paper => !paper.doi).map(paperBrief);
+  const doiRepairPlan = planRepairDoi(db);
   const recordsMissingMetadata = papers
     .filter(paper => !paper.title || !paper.year || !paper.authors?.length)
     .map(paperBrief);
@@ -792,6 +880,8 @@ function buildDoctorReport(library, db) {
     missingPdfRecords,
     recordsWithoutPdf,
     recordsWithoutDoi,
+    normalizableDoiRecords: doiRepairPlan.normalize,
+    invalidDoiRecords: doiRepairPlan.clear,
     recordsMissingMetadata,
   };
 }
@@ -807,6 +897,8 @@ function printDoctorReport(report) {
   console.log(`Missing stored PDFs: ${report.missingPdfRecords.length}`);
   console.log(`Records without PDF: ${report.recordsWithoutPdf.length}`);
   console.log(`Records without DOI: ${report.recordsWithoutDoi.length}`);
+  console.log(`Normalizable DOI values: ${report.normalizableDoiRecords.length}`);
+  console.log(`Invalid DOI values: ${report.invalidDoiRecords.length}`);
   console.log(`Records missing title/year/authors: ${report.recordsMissingMetadata.length}`);
 
   const previewGroups = report.duplicatePdfHashGroups.slice(0, 10);
@@ -1267,6 +1359,23 @@ async function main() {
       console.log(JSON.stringify(report, null, 2));
     } else {
       printDoctorReport(report);
+    }
+    return 0;
+  }
+
+  if (command === "repair-doi") {
+    const apply = readFlag(args, "--apply");
+    const json = readFlag(args, "--json");
+    const db = await readDb(library);
+    const plan = planRepairDoi(db);
+    let applied = null;
+    if (apply) {
+      applied = await applyRepairDoi(library, db, plan);
+    }
+    if (json) {
+      console.log(JSON.stringify({ plan, applied }, null, 2));
+    } else {
+      printRepairDoiPlan(plan, applied);
     }
     return 0;
   }

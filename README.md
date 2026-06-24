@@ -116,6 +116,7 @@ litvault [--library DIR] search QUERY [--limit N]
 litvault [--library DIR] list [--limit N]
 litvault [--library DIR] stats [--json]
 litvault [--library DIR] doctor [--json]
+litvault [--library DIR] repair-doi [--apply] [--json]
 litvault [--library DIR] dedupe [--apply] [--json]
 litvault [--library DIR] export-bib [QUERY...] [--file queries.txt] [--out FILE]
 litvault [--library DIR] sync zotero [--dry-run] [--no-copy-pdfs]
@@ -247,7 +248,21 @@ litvault doctor
 litvault doctor --json
 ```
 
-`doctor` reports duplicate PDF hash groups, duplicate DOI groups, missing stored PDFs, records without PDFs, records without DOIs, and records missing key metadata.
+`doctor` reports duplicate PDF hash groups, duplicate DOI groups, invalid DOI values, normalizable DOI values, missing stored PDFs, records without PDFs, records without DOIs, and records missing key metadata.
+
+Preview DOI cleanup:
+
+```bash
+litvault repair-doi
+```
+
+Apply DOI cleanup:
+
+```bash
+litvault repair-doi --apply
+```
+
+`repair-doi` normalizes DOI values that can be safely normalized, such as `https://doi.org/...` or trailing punctuation, and clears DOI fields that still do not match the DOI pattern after normalization. It does not delete paper records or PDFs. `--apply` writes a manifest backup before changing anything.
 
 Preview safe duplicate cleanup:
 
