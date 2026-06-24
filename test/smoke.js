@@ -70,6 +70,32 @@ async function main() {
     if (!normalizedInfo.includes('"doi": "10.9999/metadata-only"')) {
       throw new Error("DOI trailing punctuation was not normalized");
     }
+
+    const manifest = path.join(library, "manifest.json");
+    const db = JSON.parse(await fsp.readFile(manifest, "utf8"));
+    const duplicateSource = db.papers.find(paper => paper.doi === "10.5678/second");
+    db.papers.push({
+      ...duplicateSource,
+      id: db.nextId++,
+      citekey: `${duplicateSource.citekey}dup`,
+      addedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
+    await fsp.writeFile(manifest, JSON.stringify(db, null, 2) + "\n", "utf8");
+
+    const doctor = run(["--library", library, "doctor"]);
+    if (!doctor.includes("Duplicate PDF hash groups: 1")) {
+      throw new Error("doctor did not report duplicate PDF hash group");
+    }
+    const dedupeDryRun = run(["--library", library, "dedupe"]);
+    if (!dedupeDryRun.includes("Records that would be removed: 1")) {
+      throw new Error("dedupe dry-run did not plan one removal");
+    }
+    const dedupeApply = run(["--library", library, "dedupe", "--apply"]);
+    if (!dedupeApply.includes("Applied: removed 1 records")) {
+      throw new Error("dedupe apply did not remove one record");
+    }
+
     const search = run(["--library", library, "search", "smoke"]);
     if (!search.includes("10.1234/example")) throw new Error("search output missing DOI");
 

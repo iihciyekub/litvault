@@ -115,6 +115,8 @@ litvault [--library DIR] info QUERY
 litvault [--library DIR] search QUERY [--limit N]
 litvault [--library DIR] list [--limit N]
 litvault [--library DIR] stats [--json]
+litvault [--library DIR] doctor [--json]
+litvault [--library DIR] dedupe [--apply] [--json]
 litvault [--library DIR] export-bib [QUERY...] [--file queries.txt] [--out FILE]
 litvault [--library DIR] sync zotero [--dry-run] [--no-copy-pdfs]
 litvault config get
@@ -235,6 +237,37 @@ litvault stats --json
 ```
 
 The stats command reports paper counts, DOI/PDF coverage, missing stored PDFs, unique PDF objects, year range, tag/type/venue summaries, and disk usage for the manifest, object store, and whole library.
+
+## Doctor and Dedupe
+
+Inspect possible index problems:
+
+```bash
+litvault doctor
+litvault doctor --json
+```
+
+`doctor` reports duplicate PDF hash groups, duplicate DOI groups, missing stored PDFs, records without PDFs, records without DOIs, and records missing key metadata.
+
+Preview safe duplicate cleanup:
+
+```bash
+litvault dedupe
+```
+
+Apply safe duplicate cleanup:
+
+```bash
+litvault dedupe --apply
+```
+
+`dedupe` only auto-merges duplicate PDF-hash groups when their DOI values are compatible, meaning all records share the same DOI or only one record has a DOI. If the same PDF hash is attached to multiple different DOIs, it is reported as a conflict and left untouched.
+
+Before applying changes, `dedupe --apply` writes a manifest backup:
+
+```text
+manifest.backup-YYYY-MM-DDTHH-MM-SS-sssZ.json
+```
 
 ## Export
 
