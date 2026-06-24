@@ -1,0 +1,38 @@
+{
+  "name": "litvault",
+  "version": "0.1.0",
+  "description": "A DOI-centered local literature vault CLI.",
+  "license": "MIT",
+  "author": "iipro",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/iihciyekub/litvault.git"
+  },
+  "bugs": {
+    "url": "https://github.com/iihciyekub/litvault/issues"
+  },
+  "homepage": "https://github.com/iihciyekub/litvault#readme",
+  "bin": {
+    "litvault": "bin/litvault-node.js"
+  },
+  "files": [
+    "bin/",
+    "README.md",
+    "test/"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "test": "node test/smoke.js",
+    "smoke": "node bin/litvault-node.js --version"
+  },
+  "keywords": [
+    "literature",
+    "doi",
+    "papers",
+    "bibtex",
+    "cli",
+    "zotero"
+  ]
+}

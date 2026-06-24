@@ -1,0 +1,272 @@
+# litvault
+
+`litvault` is a DOI-centered local literature vault CLI.
+
+It is implemented in Node.js, installs with npm, stores metadata in a local `manifest.json`, and stores PDFs by SHA256 content hash.
+
+## Install
+
+From this project directory:
+
+```bash
+cd /Users/iipro/iiresearch/litvault
+npm install -g .
+litvault --help
+```
+
+For development:
+
+```bash
+npm link
+litvault --version
+```
+
+Without installing globally:
+
+```bash
+cd /Users/iipro/iiresearch/litvault
+bin/litvault --help
+```
+
+`litvault` does not require Python or SQLite.
+
+After npm publication:
+
+```bash
+npm install -g litvault
+litvault --help
+```
+
+## Storage
+
+By default, the library lives at:
+
+```text
+~/litvault-library/
+  manifest.json
+  objects/
+    sha256/
+  exports/
+  notes/
+```
+
+Use another library directory with:
+
+```bash
+litvault --library /path/to/library init
+```
+
+The DOI is the main identity key. If you import the same DOI again, `litvault` updates the existing record instead of creating a duplicate.
+
+The PDF object store is content-addressed. If the exact same PDF bytes are imported again, the stored PDF object is reused.
+
+## Quick Start
+
+```bash
+litvault init
+litvault add ~/Downloads/paper.pdf --doi 10.1038/s41586-020-2649-2
+litvault add ~/Downloads/papers
+litvault import-dois 10.1038/s41586-020-2649-2 10.1145/3510003.3510101
+litvault search transformer
+litvault info 10.1038/s41586-020-2649-2
+litvault get 10.1038/s41586-020-2649-2 --to ~/Desktop/refs
+litvault export-bib --out ~/Desktop/references.bib
+```
+
+## Commands
+
+```bash
+litvault [--library DIR] init [DIR]
+litvault [--library DIR] add FILE_OR_DIR... [--doi DOI] [--title TITLE] [--tag TAG] [--no-crossref] [--no-recursive]
+litvault [--library DIR] import-dois DOI... [--file dois.txt] [--tag TAG] [--no-crossref]
+litvault [--library DIR] get QUERY... --to DIR [--file queries.txt] [--name "{citekey}.pdf"]
+litvault [--library DIR] info QUERY
+litvault [--library DIR] search QUERY [--limit N]
+litvault [--library DIR] list [--limit N]
+litvault [--library DIR] export-bib [QUERY...] [--file queries.txt] [--out FILE]
+litvault [--library DIR] sync zotero [--dry-run] [--no-copy-pdfs]
+```
+
+## Add PDFs
+
+Add one PDF with an explicit DOI:
+
+```bash
+litvault add ~/Downloads/paper.pdf --doi 10.1038/s41586-020-2649-2
+```
+
+Add one PDF and let `litvault` scan for a DOI:
+
+```bash
+litvault add ~/Downloads/paper.pdf
+```
+
+Add a directory recursively:
+
+```bash
+litvault add ~/Downloads/papers
+```
+
+Add only PDFs directly inside a directory:
+
+```bash
+litvault add ~/Downloads/papers --no-recursive
+```
+
+Add tags:
+
+```bash
+litvault add ~/Downloads/papers --tag ai --tag methods
+```
+
+Skip Crossref metadata lookup:
+
+```bash
+litvault add ~/Downloads/papers --no-crossref
+```
+
+When importing a directory, `litvault` only processes `.pdf` files. A PDF is imported only if a DOI is found. Files without a DOI are skipped and reported.
+
+## DOI Scanning
+
+Current DOI scanning is lightweight:
+
+1. Read the first 4 MB of the PDF file.
+2. Decode those bytes as UTF-8.
+3. If no DOI is found, decode as Latin-1.
+4. Search with this DOI pattern:
+
+```text
+10.<4-9 digits>/<DOI suffix>
+```
+
+It recognizes common forms such as:
+
+```text
+10.1038/s41586-020-2649-2
+doi:10.1145/3510003.3510101
+https://doi.org/10.1000/xyz123
+```
+
+Limitations:
+
+- Scanned-image PDFs are not OCRed.
+- Compressed or deeply encoded PDF text may not be found.
+- A DOI outside the first 4 MB may not be found.
+- If a non-literature PDF contains a DOI-shaped string, it may be imported.
+
+The default behavior is conservative: no DOI means no import.
+
+## Import DOI Lists
+
+Import metadata for many DOIs without PDFs:
+
+```bash
+litvault import-dois 10.1038/s41586-020-2649-2 10.1145/3510003.3510101
+```
+
+Import from a text file:
+
+```bash
+litvault import-dois --file dois.txt
+```
+
+`dois.txt` can contain one DOI per line. Empty lines and lines starting with `#` are ignored.
+
+## Export
+
+Export the whole library:
+
+```bash
+litvault export-bib --out all.bib
+```
+
+Export selected records:
+
+```bash
+litvault export-bib 10.1038/s41586-020-2649-2 10.1145/3510003.3510101 --out selected.bib
+```
+
+Export selected records from a query file:
+
+```bash
+litvault export-bib --file dois.txt --out selected.bib
+```
+
+Queries can be DOI, citekey, title text, or internal ID.
+
+## Copy PDFs Out
+
+Copy one PDF:
+
+```bash
+litvault get 10.1038/s41586-020-2649-2 --to ~/Desktop/refs
+```
+
+Copy many PDFs:
+
+```bash
+litvault get 10.1038/s41586-020-2649-2 10.1145/3510003.3510101 --to ~/Desktop/refs
+```
+
+Copy from a query file:
+
+```bash
+litvault get --file dois.txt --to ~/Desktop/refs
+```
+
+Use a filename pattern:
+
+```bash
+litvault get 10.1038/s41586-020-2649-2 --to ~/Desktop/refs --name "{year}-{first_author}-{title}.pdf"
+```
+
+Available filename fields:
+
+```text
+{id}
+{doi}
+{citekey}
+{year}
+{first_author}
+{title}
+```
+
+## Zotero Sync
+
+`litvault sync zotero` imports DOI-backed top-level Zotero items through Zotero's local API.
+
+Before syncing:
+
+1. Start Zotero.
+2. Enable local API access in Zotero settings.
+3. Run:
+
+```bash
+litvault sync zotero --dry-run
+litvault sync zotero
+```
+
+Metadata and available PDF attachments are imported into `litvault`.
+
+Skip PDF attachment copying:
+
+```bash
+litvault sync zotero --no-copy-pdfs
+```
+
+Import from another Zotero library path:
+
+```bash
+litvault sync zotero --zotero-library groups/123456
+```
+
+The current sync direction is Zotero -> litvault. Local write-back into Zotero is intentionally not included in v0.1.
+
+## Notes
+
+- DOI is normalized before storage.
+- Same DOI updates the same record.
+- Same PDF bytes reuse the same SHA256 object.
+- BibTeX can be regenerated at any time.
+- Crossref is used for metadata lookup unless `--no-crossref` is passed.

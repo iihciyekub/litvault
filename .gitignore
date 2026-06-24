@@ -1,0 +1,11 @@
+.DS_Store
+node_modules/
+npm-debug.log*
+*.tgz
+
+# Local litvault libraries and generated outputs
+litvault-library/
+objects/
+exports/
+notes/
+manifest.json
