@@ -57,6 +57,10 @@ async function main() {
       "smoke",
     ], { configRoot: temp });
     run(["add", batch, "--no-crossref", "--tag", "batch"], { configRoot: temp });
+    const duplicateAdd = run(["add", batch, "--no-crossref", "--tag", "batch"], { configRoot: temp });
+    if (!duplicateAdd.includes("skipped existing PDFs: 1")) {
+      throw new Error("duplicate directory import did not skip existing PDFs");
+    }
     run(["--library", library, "import-dois", "--file", doiFile, "--no-crossref", "--tag", "doi-list"]);
     const normalizedInfo = run(["--library", library, "info", "10.9999/metadata-only"]);
     if (!normalizedInfo.includes('"doi": "10.9999/metadata-only"')) {

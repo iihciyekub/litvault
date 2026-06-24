@@ -8,7 +8,7 @@ const https = require("node:https");
 const os = require("node:os");
 const path = require("node:path");
 
-const VERSION = "0.1.3";
+const VERSION = "0.1.4";
 const FALLBACK_LIBRARY = path.join(os.homedir(), "litvault-library");
 const DOI_RE = /\b(10\.\d{4,9}\/[-._;()/:A-Z0-9]+)/i;
 const DOI_GLOBAL_RE = /\b(10\.\d{4,9}\/[-._;()/:A-Z0-9]+)/gi;
@@ -183,6 +183,10 @@ async function sha256File(file) {
 
 async function storePdf(library, source) {
   const digest = await sha256File(source);
+  return storePdfWithHash(library, source, digest);
+}
+
+async function storePdfWithHash(library, source, digest) {
   const rel = path.join("objects", "sha256", digest.slice(0, 2), digest.slice(2, 4), `${digest}.pdf`);
   const dest = path.join(library, rel);
   await fsp.mkdir(path.dirname(dest), { recursive: true });
@@ -314,6 +318,117 @@ async function upsertPaper(library, metadata, pdf, tags = []) {
 
   await writeDb(library, db);
   return paper;
+}
+
+function buildDbIndexes(db) {
+  const byDoi = new Map();
+  const byPdfSha256 = new Map();
+  const byZotero = new Map();
+  for (const paper of db.papers || []) {
+    if (paper.doi) byDoi.set(paper.doi, paper);
+    if (paper.pdfSha256) byPdfSha256.set(paper.pdfSha256, paper);
+    if (paper.zoteroKey) byZotero.set(`${paper.zoteroLibrary || ""}:${paper.zoteroKey}`, paper);
+  }
+  return { byDoi, byPdfSha256, byZotero };
+}
+
+function applyMetadataToPaper(db, indexes, metadata, pdfData, tags = []) {
+  const doi = metadata.doi ? normalizeDoi(metadata.doi) : null;
+  let paper = doi ? indexes.byDoi.get(doi) : null;
+  if (!paper && metadata.zoteroKey) {
+    paper = indexes.byZotero.get(`${metadata.zoteroLibrary || ""}:${metadata.zoteroKey}`);
+  }
+
+  const timestamp = nowIso();
+  const base = makeCitekey(metadata.authors || [], metadata.year, metadata.title || "", doi || pdfData?.sha256 || "paper");
+  const isNew = !paper;
+
+  if (!paper) {
+    paper = { id: db.nextId++, addedAt: timestamp };
+    db.papers.push(paper);
+  }
+
+  const existingId = paper.id;
+  paper.doi = doi || paper.doi || null;
+  paper.title = metadata.title || paper.title || "";
+  paper.authors = metadata.authors?.length ? metadata.authors : paper.authors || [];
+  paper.year = metadata.year || paper.year || null;
+  paper.venue = metadata.venue || paper.venue || "";
+  paper.publisher = metadata.publisher || paper.publisher || "";
+  paper.url = metadata.url || paper.url || "";
+  paper.type = metadata.type || paper.type || "";
+  paper.citekey = paper.citekey || uniqueCitekey(db, base, existingId);
+  paper.pdfSha256 = pdfData?.sha256 || paper.pdfSha256 || null;
+  paper.pdfPath = pdfData?.path || paper.pdfPath || null;
+  paper.tags = Array.from(new Set([...(paper.tags || []), ...tags])).sort();
+  paper.zoteroKey = metadata.zoteroKey || paper.zoteroKey || null;
+  paper.zoteroLibrary = metadata.zoteroLibrary || paper.zoteroLibrary || null;
+  paper.updatedAt = timestamp;
+
+  if (paper.doi) indexes.byDoi.set(paper.doi, paper);
+  if (paper.pdfSha256) indexes.byPdfSha256.set(paper.pdfSha256, paper);
+  if (paper.zoteroKey) indexes.byZotero.set(`${paper.zoteroLibrary || ""}:${paper.zoteroKey}`, paper);
+  return { paper, isNew };
+}
+
+async function addPdfBatch(library, files, options) {
+  const db = await readDb(library);
+  const indexes = buildDbIndexes(db);
+  const seenInputHashes = new Map();
+  let imported = 0;
+  let updated = 0;
+  let skippedNoDoi = 0;
+  let skippedExistingPdf = 0;
+  let skippedDuplicateInput = 0;
+
+  for (const file of files) {
+    const digest = await sha256File(file);
+    if (seenInputHashes.has(digest)) {
+      skippedDuplicateInput++;
+      console.log(`Skipping duplicate input PDF: ${file}`);
+      continue;
+    }
+    seenInputHashes.set(digest, file);
+
+    const existingByHash = indexes.byPdfSha256.get(digest);
+    if (existingByHash) {
+      skippedExistingPdf++;
+      console.log(`Skipping already stored PDF: ${file}  DOI: ${existingByHash.doi || "-"}  citekey: ${existingByHash.citekey || "-"}`);
+      continue;
+    }
+
+    const doi = options.doiArg ? normalizeDoi(options.doiArg) : await findDoiInFile(file);
+    if (!doi) {
+      skippedNoDoi++;
+      console.error(`Skipping without DOI: ${file}`);
+      continue;
+    }
+
+    let paper = indexes.byDoi.get(doi);
+    let metadata = { doi, title: options.title || "", authors: [] };
+    if (!paper || !paper.title || !paper.authors?.length || !paper.year) {
+      metadata = await metadataForDoi(doi, options.title || "", options.noCrossref);
+    } else if (options.title) {
+      metadata.title = options.title;
+    }
+
+    const pdfData = await storePdfWithHash(library, file, digest);
+    const result = applyMetadataToPaper(db, indexes, metadata, pdfData, options.tags);
+    paper = result.paper;
+    if (result.isNew) imported++;
+    else updated++;
+    console.log(`${result.isNew ? "Stored" : "Updated"}: ${paper.citekey}  DOI: ${paper.doi}  PDF: ${file}`);
+  }
+
+  await writeDb(library, db);
+  return {
+    imported,
+    updated,
+    skippedNoDoi,
+    skippedExistingPdf,
+    skippedDuplicateInput,
+    library,
+  };
 }
 
 async function collectPdfPaths(inputs, recursive = true) {
@@ -756,22 +871,13 @@ async function main() {
     if (!files.length) throw new Error("No PDF files found.");
     if (doiArg && files.length !== 1) throw new Error("--doi can only be used with a single PDF, not a directory or batch.");
     if (title && files.length !== 1) throw new Error("--title can only be used with a single PDF, not a directory or batch.");
-    let imported = 0;
-    let skipped = 0;
-    for (const file of files) {
-      const doi = doiArg ? normalizeDoi(doiArg) : await findDoiInFile(file);
-      if (!doi) {
-        skipped++;
-        console.error(`Skipping without DOI: ${file}`);
-        continue;
-      }
-      const metadata = await metadataForDoi(doi, title, noCrossref);
-      const paper = await upsertPaper(library, metadata, file, tags);
-      console.log(`Stored: ${paper.citekey}  DOI: ${paper.doi}  PDF: ${file}`);
-      imported++;
-    }
-    console.log(`Imported PDFs: ${imported}; skipped without DOI: ${skipped}; Library: ${library}`);
-    return skipped ? 1 : 0;
+    const result = await addPdfBatch(library, files, { doiArg, title, tags, noCrossref });
+    console.log(
+      `Imported PDFs: ${result.imported}; updated existing records: ${result.updated}; ` +
+      `skipped existing PDFs: ${result.skippedExistingPdf}; skipped duplicate input PDFs: ${result.skippedDuplicateInput}; ` +
+      `skipped without DOI: ${result.skippedNoDoi}; Library: ${result.library}`
+    );
+    return result.skippedNoDoi ? 1 : 0;
   }
 
   if (command === "import-dois") {

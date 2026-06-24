@@ -87,6 +87,8 @@ The DOI is the main identity key. If you import the same DOI again, `litvault` u
 
 The PDF object store is content-addressed. If the exact same PDF bytes are imported again, the stored PDF object is reused.
 
+Directory imports use in-memory indexes for fast deduplication. On `litvault add DIR`, the CLI loads the manifest once, builds DOI and PDF-hash maps, skips PDFs already stored by SHA256, skips duplicate files within the same input batch, and writes the manifest once at the end.
+
 ## Quick Start
 
 ```bash
@@ -160,6 +162,8 @@ litvault add ~/Downloads/papers --no-crossref
 ```
 
 When importing a directory, `litvault` only processes `.pdf` files. A PDF is imported only if a DOI is found. Files without a DOI are skipped and reported.
+
+During directory import, existing PDFs are skipped before metadata lookup. If a PDF is new but its DOI already exists in the vault, the existing record is updated with the new PDF instead of creating another record.
 
 ## DOI Scanning
 
