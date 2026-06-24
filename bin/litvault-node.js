@@ -8,7 +8,7 @@ const https = require("node:https");
 const os = require("node:os");
 const path = require("node:path");
 
-const VERSION = "0.1.2";
+const VERSION = "0.1.3";
 const FALLBACK_LIBRARY = path.join(os.homedir(), "litvault-library");
 const DOI_RE = /\b(10\.\d{4,9}\/[-._;()/:A-Z0-9]+)/i;
 const DOI_GLOBAL_RE = /\b(10\.\d{4,9}\/[-._;()/:A-Z0-9]+)/gi;
@@ -24,6 +24,7 @@ Usage:
   litvault [--library DIR] info QUERY
   litvault [--library DIR] search QUERY [--limit N]
   litvault [--library DIR] list [--limit N]
+  litvault [--library DIR] stats [--json]
   litvault [--library DIR] export-bib [QUERY...] [--file queries.txt] [--out FILE]
   litvault [--library DIR] sync zotero [--dry-run] [--no-copy-pdfs]
   litvault config get
@@ -38,6 +39,7 @@ Examples:
   litvault add ~/Downloads/papers
   litvault import-dois 10.1038/s41586-020-2649-2 10.1145/3510003.3510101
   litvault import-dois --file dois.txt
+  litvault stats
   litvault get 10.1038/s41586-020-2649-2 10.1145/3510003.3510101 --to ~/Desktop/refs
   litvault export-bib 10.1038/s41586-020-2649-2 --out refs.bib
   litvault sync zotero --dry-run
@@ -337,6 +339,40 @@ async function collectPdfPaths(inputs, recursive = true) {
   return Array.from(new Set(found));
 }
 
+async function pathSize(target) {
+  if (!fs.existsSync(target)) return { bytes: 0, files: 0 };
+  const stat = await fsp.stat(target);
+  if (stat.isFile()) return { bytes: stat.size, files: 1 };
+  if (!stat.isDirectory()) return { bytes: 0, files: 0 };
+  let bytes = 0;
+  let files = 0;
+  const entries = await fsp.readdir(target, { withFileTypes: true });
+  for (const entry of entries) {
+    const child = path.join(target, entry.name);
+    if (entry.isDirectory()) {
+      const nested = await pathSize(child);
+      bytes += nested.bytes;
+      files += nested.files;
+    } else if (entry.isFile()) {
+      const childStat = await fsp.stat(child);
+      bytes += childStat.size;
+      files++;
+    }
+  }
+  return { bytes, files };
+}
+
+function formatBytes(bytes) {
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let value = Number(bytes || 0);
+  let index = 0;
+  while (value >= 1024 && index < units.length - 1) {
+    value /= 1024;
+    index++;
+  }
+  return `${value.toFixed(index === 0 ? 0 : 1)} ${units[index]}`;
+}
+
 async function readListFile(file) {
   const text = await fsp.readFile(path.resolve(expandHome(file)), "utf8");
   const values = [];
@@ -416,6 +452,102 @@ function toBibtex(paper) {
   }
   lines.push("}");
   return lines.join("\n");
+}
+
+async function computeStats(library, db) {
+  const papers = db.papers || [];
+  const withPdf = papers.filter(p => p.pdfPath).length;
+  const missingPdf = papers.filter(p => p.pdfPath && !fs.existsSync(path.join(library, p.pdfPath))).length;
+  const withoutPdf = papers.length - withPdf;
+  const withDoi = papers.filter(p => p.doi).length;
+  const withoutDoi = papers.length - withDoi;
+  const years = papers
+    .map(p => p.year)
+    .filter(year => year !== null && year !== undefined && year !== "" && Number.isFinite(Number(year)))
+    .map(Number);
+  const tagCounts = new Map();
+  const typeCounts = new Map();
+  const venueCounts = new Map();
+  const doiCounts = new Map();
+  const pdfHashCounts = new Map();
+
+  for (const paper of papers) {
+    for (const tag of paper.tags || []) tagCounts.set(tag, (tagCounts.get(tag) || 0) + 1);
+    if (paper.type) typeCounts.set(paper.type, (typeCounts.get(paper.type) || 0) + 1);
+    if (paper.venue) venueCounts.set(paper.venue, (venueCounts.get(paper.venue) || 0) + 1);
+    if (paper.doi) doiCounts.set(paper.doi, (doiCounts.get(paper.doi) || 0) + 1);
+    if (paper.pdfSha256) pdfHashCounts.set(paper.pdfSha256, (pdfHashCounts.get(paper.pdfSha256) || 0) + 1);
+  }
+
+  const top = map => Array.from(map.entries())
+    .sort((a, b) => b[1] - a[1] || String(a[0]).localeCompare(String(b[0])))
+    .slice(0, 10)
+    .map(([name, count]) => ({ name, count }));
+
+  const manifestPath = path.join(library, "manifest.json");
+  const manifestSize = await pathSize(manifestPath);
+  const objectSize = await pathSize(path.join(library, "objects"));
+  const librarySize = await pathSize(library);
+
+  return {
+    library,
+    manifestPath,
+    totalPapers: papers.length,
+    withDoi,
+    withoutDoi,
+    withPdf,
+    withoutPdf,
+    missingPdf,
+    uniquePdfObjects: pdfHashCounts.size,
+    duplicateDoiValues: Array.from(doiCounts.entries()).filter(([, count]) => count > 1).length,
+    duplicatePdfHashes: Array.from(pdfHashCounts.entries()).filter(([, count]) => count > 1).length,
+    yearMin: years.length ? Math.min(...years) : null,
+    yearMax: years.length ? Math.max(...years) : null,
+    tagCount: tagCounts.size,
+    topTags: top(tagCounts),
+    topTypes: top(typeCounts),
+    topVenues: top(venueCounts),
+    manifestBytes: manifestSize.bytes,
+    objectBytes: objectSize.bytes,
+    objectFiles: objectSize.files,
+    libraryBytes: librarySize.bytes,
+  };
+}
+
+function printStats(stats) {
+  console.log(`Library: ${stats.library}`);
+  console.log(`Manifest: ${stats.manifestPath}`);
+  console.log("");
+  console.log(`Papers: ${stats.totalPapers}`);
+  console.log(`With DOI: ${stats.withDoi}`);
+  console.log(`Without DOI: ${stats.withoutDoi}`);
+  console.log(`With PDF: ${stats.withPdf}`);
+  console.log(`Without PDF: ${stats.withoutPdf}`);
+  console.log(`Missing stored PDFs: ${stats.missingPdf}`);
+  console.log(`Unique PDF objects: ${stats.uniquePdfObjects}`);
+  console.log(`Year range: ${stats.yearMin ?? "-"} - ${stats.yearMax ?? "-"}`);
+  console.log("");
+  console.log(`Manifest size: ${formatBytes(stats.manifestBytes)}`);
+  console.log(`Objects size: ${formatBytes(stats.objectBytes)} (${stats.objectFiles} files)`);
+  console.log(`Library size: ${formatBytes(stats.libraryBytes)}`);
+  console.log("");
+  console.log(`Duplicate DOI values: ${stats.duplicateDoiValues}`);
+  console.log(`Duplicate PDF hashes: ${stats.duplicatePdfHashes}`);
+  if (stats.topTags.length) {
+    console.log("");
+    console.log("Top tags:");
+    for (const item of stats.topTags) console.log(`  ${item.name}: ${item.count}`);
+  }
+  if (stats.topTypes.length) {
+    console.log("");
+    console.log("Top types:");
+    for (const item of stats.topTypes) console.log(`  ${item.name}: ${item.count}`);
+  }
+  if (stats.topVenues.length) {
+    console.log("");
+    console.log("Top venues:");
+    for (const item of stats.topVenues) console.log(`  ${item.name}: ${item.count}`);
+  }
 }
 
 function parseArgs(argv) {
@@ -728,6 +860,18 @@ async function main() {
     const rows = [...db.papers].sort((a, b) => String(b.addedAt).localeCompare(String(a.addedAt))).slice(0, limit);
     rows.forEach(printRow);
     if (!rows.length) console.log("No papers yet.");
+    return 0;
+  }
+
+  if (command === "stats") {
+    const json = readFlag(args, "--json");
+    const db = await readDb(library);
+    const stats = await computeStats(library, db);
+    if (json) {
+      console.log(JSON.stringify(stats, null, 2));
+    } else {
+      printStats(stats);
+    }
     return 0;
   }
 

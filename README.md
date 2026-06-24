@@ -96,6 +96,7 @@ litvault add ~/Downloads/paper.pdf --doi 10.1038/s41586-020-2649-2
 litvault add ~/Downloads/papers
 litvault import-dois 10.1038/s41586-020-2649-2 10.1145/3510003.3510101
 litvault search transformer
+litvault stats
 litvault info 10.1038/s41586-020-2649-2
 litvault get 10.1038/s41586-020-2649-2 --to ~/Desktop/refs
 litvault export-bib --out ~/Desktop/references.bib
@@ -111,6 +112,7 @@ litvault [--library DIR] get QUERY... --to DIR [--file queries.txt] [--name "{ci
 litvault [--library DIR] info QUERY
 litvault [--library DIR] search QUERY [--limit N]
 litvault [--library DIR] list [--limit N]
+litvault [--library DIR] stats [--json]
 litvault [--library DIR] export-bib [QUERY...] [--file queries.txt] [--out FILE]
 litvault [--library DIR] sync zotero [--dry-run] [--no-copy-pdfs]
 litvault config get
@@ -204,6 +206,24 @@ litvault import-dois --file dois.txt
 ```
 
 `dois.txt` can contain one DOI per line. Empty lines and lines starting with `#` are ignored.
+
+## Export
+
+## Stats
+
+Show library summary:
+
+```bash
+litvault stats
+```
+
+Machine-readable output:
+
+```bash
+litvault stats --json
+```
+
+The stats command reports paper counts, DOI/PDF coverage, missing stored PDFs, unique PDF objects, year range, tag/type/venue summaries, and disk usage for the manifest, object store, and whole library.
 
 ## Export
 

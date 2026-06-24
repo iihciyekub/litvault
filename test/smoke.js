@@ -65,6 +65,15 @@ async function main() {
     const search = run(["--library", library, "search", "smoke"]);
     if (!search.includes("10.1234/example")) throw new Error("search output missing DOI");
 
+    const stats = run(["--library", library, "stats"]);
+    if (!stats.includes("Papers: 3") || !stats.includes("With PDF: 2")) {
+      throw new Error("stats output missing expected counts");
+    }
+    const statsJson = JSON.parse(run(["--library", library, "stats", "--json"]));
+    if (statsJson.totalPapers !== 3 || statsJson.withPdf !== 2) {
+      throw new Error("stats JSON missing expected counts");
+    }
+
     const copied = run([
       "--library",
       library,
