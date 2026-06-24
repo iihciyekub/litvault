@@ -50,10 +50,37 @@ By default, the library lives at:
   notes/
 ```
 
-Use another library directory with:
+Use another library directory once:
 
 ```bash
 litvault --library /path/to/library init
+```
+
+Set a persistent default library, for example on an external SSD:
+
+```bash
+litvault config set library /Volumes/ResearchSSD/litvault-library
+litvault init
+litvault config get
+```
+
+After that, normal commands use the configured SSD library:
+
+```bash
+litvault add ~/Downloads/papers
+litvault list
+```
+
+Override it temporarily:
+
+```bash
+litvault --library ~/litvault-library list
+```
+
+You can also use an environment variable:
+
+```bash
+LITVAULT_LIBRARY=/Volumes/ResearchSSD/litvault-library litvault add ~/Downloads/papers
 ```
 
 The DOI is the main identity key. If you import the same DOI again, `litvault` updates the existing record instead of creating a duplicate.
@@ -64,6 +91,7 @@ The PDF object store is content-addressed. If the exact same PDF bytes are impor
 
 ```bash
 litvault init
+litvault config set library /Volumes/ResearchSSD/litvault-library
 litvault add ~/Downloads/paper.pdf --doi 10.1038/s41586-020-2649-2
 litvault add ~/Downloads/papers
 litvault import-dois 10.1038/s41586-020-2649-2 10.1145/3510003.3510101
@@ -85,6 +113,10 @@ litvault [--library DIR] search QUERY [--limit N]
 litvault [--library DIR] list [--limit N]
 litvault [--library DIR] export-bib [QUERY...] [--file queries.txt] [--out FILE]
 litvault [--library DIR] sync zotero [--dry-run] [--no-copy-pdfs]
+litvault config get
+litvault config set library DIR
+litvault config unset library
+litvault config path
 ```
 
 ## Add PDFs
@@ -270,3 +302,4 @@ The current sync direction is Zotero -> litvault. Local write-back into Zotero i
 - Same PDF bytes reuse the same SHA256 object.
 - BibTeX can be regenerated at any time.
 - Crossref is used for metadata lookup unless `--no-crossref` is passed.
+- Library selection priority is `--library`, then `LITVAULT_LIBRARY`, then `litvault config set library`, then `~/litvault-library`.

@@ -8,8 +8,8 @@ const https = require("node:https");
 const os = require("node:os");
 const path = require("node:path");
 
-const VERSION = "0.1.0";
-const DEFAULT_LIBRARY = path.join(os.homedir(), "litvault-library");
+const VERSION = "0.1.1";
+const FALLBACK_LIBRARY = path.join(os.homedir(), "litvault-library");
 const DOI_RE = /\b(10\.\d{4,9}\/[-._;()/:A-Z0-9]+)/i;
 const DOI_GLOBAL_RE = /\b(10\.\d{4,9}\/[-._;()/:A-Z0-9]+)/gi;
 
@@ -26,9 +26,14 @@ Usage:
   litvault [--library DIR] list [--limit N]
   litvault [--library DIR] export-bib [QUERY...] [--file queries.txt] [--out FILE]
   litvault [--library DIR] sync zotero [--dry-run] [--no-copy-pdfs]
+  litvault config get
+  litvault config set library DIR
+  litvault config unset library
+  litvault config path
 
 Examples:
   litvault init ~/litvault-library
+  litvault config set library /Volumes/ResearchSSD/litvault-library
   litvault add ~/Downloads/paper.pdf --doi 10.1038/s41586-020-2649-2
   litvault add ~/Downloads/papers
   litvault import-dois 10.1038/s41586-020-2649-2 10.1145/3510003.3510101
@@ -44,6 +49,58 @@ function expandHome(value) {
   if (value === "~") return os.homedir();
   if (value.startsWith("~/")) return path.join(os.homedir(), value.slice(2));
   return value;
+}
+
+function resolvePath(value) {
+  return path.resolve(expandHome(value));
+}
+
+function configDir() {
+  if (process.env.XDG_CONFIG_HOME) return path.join(expandHome(process.env.XDG_CONFIG_HOME), "litvault");
+  return path.join(os.homedir(), ".config", "litvault");
+}
+
+function configPath() {
+  return path.join(configDir(), "config.json");
+}
+
+function readConfig() {
+  const file = configPath();
+  if (!fs.existsSync(file)) return {};
+  try {
+    return JSON.parse(fs.readFileSync(file, "utf8"));
+  } catch (error) {
+    throw new Error(`Could not read config ${file}: ${error.message}`);
+  }
+}
+
+function writeConfig(config) {
+  const dir = configDir();
+  fs.mkdirSync(dir, { recursive: true });
+  const file = configPath();
+  const temp = `${file}.${process.pid}.tmp`;
+  fs.writeFileSync(temp, JSON.stringify(config, null, 2) + "\n", "utf8");
+  fs.renameSync(temp, file);
+}
+
+function defaultLibraryInfo() {
+  if (process.env.LITVAULT_LIBRARY) {
+    return {
+      path: resolvePath(process.env.LITVAULT_LIBRARY),
+      source: "LITVAULT_LIBRARY",
+    };
+  }
+  const config = readConfig();
+  if (config.library) {
+    return {
+      path: resolvePath(config.library),
+      source: configPath(),
+    };
+  }
+  return {
+    path: resolvePath(FALLBACK_LIBRARY),
+    source: "built-in default",
+  };
 }
 
 function normalizeDoi(value) {
@@ -358,15 +415,17 @@ function toBibtex(paper) {
 
 function parseArgs(argv) {
   const args = [...argv];
-  const global = { library: DEFAULT_LIBRARY };
+  const defaultLibrary = defaultLibraryInfo();
+  const global = { library: defaultLibrary.path, librarySource: defaultLibrary.source };
   for (let i = 0; i < args.length;) {
     if (args[i] === "--library") {
       global.library = args.splice(i, 2)[1];
+      global.librarySource = "--library";
       continue;
     }
     i++;
   }
-  global.library = path.resolve(expandHome(global.library));
+  global.library = resolvePath(global.library);
   return { global, args };
 }
 
@@ -497,6 +556,48 @@ async function main() {
 
   const command = args.shift();
   const library = global.library;
+
+  if (command === "config") {
+    const action = args.shift();
+    if (action === "path") {
+      console.log(configPath());
+      return 0;
+    }
+    if (action === "get" || !action) {
+      const config = readConfig();
+      console.log(JSON.stringify({
+        configPath: configPath(),
+        configuredLibrary: config.library || null,
+        effectiveLibrary: global.library,
+        effectiveLibrarySource: global.librarySource,
+        envLibrary: process.env.LITVAULT_LIBRARY || null,
+      }, null, 2));
+      return 0;
+    }
+    if (action === "set") {
+      const key = args.shift();
+      if (key !== "library") throw new Error("Only config key supported: library");
+      const value = args.shift();
+      if (!value) throw new Error("Missing library directory.");
+      const config = readConfig();
+      config.library = resolvePath(value);
+      writeConfig(config);
+      console.log(`Configured default library: ${config.library}`);
+      console.log(`Config: ${configPath()}`);
+      return 0;
+    }
+    if (action === "unset") {
+      const key = args.shift();
+      if (key !== "library") throw new Error("Only config key supported: library");
+      const config = readConfig();
+      delete config.library;
+      writeConfig(config);
+      console.log("Unset default library.");
+      console.log(`Config: ${configPath()}`);
+      return 0;
+    }
+    throw new Error(`Unknown config action: ${action}`);
+  }
 
   if (command === "init") {
     const target = path.resolve(expandHome(args[0] || library));

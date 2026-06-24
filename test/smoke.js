@@ -10,10 +10,12 @@ const root = path.resolve(__dirname, "..");
 const cli = path.join(root, "bin", "litvault-node.js");
 
 function run(args, options = {}) {
+  const { configRoot, ...spawnOptions } = options;
   const result = spawnSync(process.execPath, [cli, ...args], {
     cwd: root,
     encoding: "utf8",
-    ...options,
+    env: { ...process.env, XDG_CONFIG_HOME: path.join(configRoot || os.tmpdir(), "xdg") },
+    ...spawnOptions,
   });
   if (result.status !== 0) {
     throw new Error(
@@ -38,10 +40,12 @@ async function main() {
     await fsp.writeFile(pdf2, "%PDF-1.4\nDOI 10.5678/second\n", "utf8");
     await fsp.writeFile(doiFile, "10.1234/example\n10.9999/metadata-only\n", "utf8");
 
-    run(["--library", library, "init"]);
+    run(["config", "set", "library", library], { configRoot: temp });
+    const config = run(["config", "get"], { configRoot: temp });
+    if (!config.includes(library)) throw new Error("configured library missing from config get");
+
+    run(["init"], { configRoot: temp });
     run([
-      "--library",
-      library,
       "add",
       pdf,
       "--doi",
@@ -51,8 +55,8 @@ async function main() {
       "--no-crossref",
       "--tag",
       "smoke",
-    ]);
-    run(["--library", library, "add", batch, "--no-crossref", "--tag", "batch"]);
+    ], { configRoot: temp });
+    run(["add", batch, "--no-crossref", "--tag", "batch"], { configRoot: temp });
     run(["--library", library, "import-dois", "--file", doiFile, "--no-crossref", "--tag", "doi-list"]);
     const search = run(["--library", library, "search", "smoke"]);
     if (!search.includes("10.1234/example")) throw new Error("search output missing DOI");
