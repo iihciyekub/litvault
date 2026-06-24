@@ -110,6 +110,15 @@ async function main() {
       throw new Error("repair-doi apply did not apply expected DOI fixes");
     }
 
+    const verify = run(["--library", library, "verify"]);
+    if (!verify.includes("Integrity: OK") || !verify.includes("Hash mismatches: 0")) {
+      throw new Error("verify did not report clean integrity");
+    }
+    const verifyJson = JSON.parse(run(["--library", library, "verify", "--json"]));
+    if (!verifyJson.ok || verifyJson.hashMismatches.length !== 0) {
+      throw new Error("verify JSON did not report clean integrity");
+    }
+
     const search = run(["--library", library, "search", "smoke"]);
     if (!search.includes("10.1234/example")) throw new Error("search output missing DOI");
 

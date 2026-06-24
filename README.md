@@ -115,6 +115,7 @@ litvault [--library DIR] info QUERY
 litvault [--library DIR] search QUERY [--limit N]
 litvault [--library DIR] list [--limit N]
 litvault [--library DIR] stats [--json]
+litvault [--library DIR] verify [--fast] [--json]
 litvault [--library DIR] doctor [--json]
 litvault [--library DIR] repair-doi [--apply] [--json]
 litvault [--library DIR] dedupe [--apply] [--json]
@@ -238,6 +239,28 @@ litvault stats --json
 ```
 
 The stats command reports paper counts, DOI/PDF coverage, missing stored PDFs, unique PDF objects, year range, tag/type/venue summaries, and disk usage for the manifest, object store, and whole library.
+
+## Verify
+
+Run a full integrity check:
+
+```bash
+litvault verify
+```
+
+Fast mode skips SHA256 re-hashing and checks structure/existence only:
+
+```bash
+litvault verify --fast
+```
+
+Machine-readable output:
+
+```bash
+litvault verify --json
+```
+
+`verify` checks that every PDF referenced by `manifest.json` exists, that stored PDFs still match their SHA256 hashes, that object PDFs are referenced by the manifest, and that DOI/duplicate problems are not present. It returns a non-zero exit code if integrity checks fail.
 
 ## Doctor and Dedupe
 

@@ -8,7 +8,7 @@ const https = require("node:https");
 const os = require("node:os");
 const path = require("node:path");
 
-const VERSION = "0.1.8";
+const VERSION = "0.1.9";
 const FALLBACK_LIBRARY = path.join(os.homedir(), "litvault-library");
 const DOI_RE = /\b(10\.\d{4,9}\/[-._;()/:A-Z0-9]+)/i;
 const DOI_GLOBAL_RE = /\b(10\.\d{4,9}\/[-._;()/:A-Z0-9]+)/gi;
@@ -26,6 +26,7 @@ Usage:
   litvault [--library DIR] search QUERY [--limit N]
   litvault [--library DIR] list [--limit N]
   litvault [--library DIR] stats [--json]
+  litvault [--library DIR] verify [--fast] [--json]
   litvault [--library DIR] doctor [--json]
   litvault [--library DIR] repair-doi [--apply] [--json]
   litvault [--library DIR] dedupe [--apply] [--json]
@@ -44,6 +45,7 @@ Examples:
   litvault import-dois 10.1038/s41586-020-2649-2 10.1145/3510003.3510101
   litvault import-dois --file dois.txt
   litvault stats
+  litvault verify
   litvault doctor
   litvault repair-doi --apply
   litvault dedupe --apply
@@ -505,6 +507,24 @@ async function pathSize(target) {
   return { bytes, files };
 }
 
+async function collectFiles(root, predicate = () => true) {
+  if (!fs.existsSync(root)) return [];
+  const stat = await fsp.stat(root);
+  if (stat.isFile()) return predicate(root) ? [root] : [];
+  if (!stat.isDirectory()) return [];
+  const found = [];
+  const entries = await fsp.readdir(root, { withFileTypes: true });
+  for (const entry of entries) {
+    const child = path.join(root, entry.name);
+    if (entry.isDirectory()) {
+      found.push(...await collectFiles(child, predicate));
+    } else if (entry.isFile() && predicate(child)) {
+      found.push(child);
+    }
+  }
+  return found;
+}
+
 function formatBytes(bytes) {
   const units = ["B", "KB", "MB", "GB", "TB"];
   let value = Number(bytes || 0);
@@ -712,6 +732,109 @@ function printStats(stats) {
     console.log("");
     console.log("Top venues:");
     for (const item of stats.topVenues) console.log(`  ${item.name}: ${item.count}`);
+  }
+}
+
+async function verifyLibrary(library, db, options = {}) {
+  const papers = db.papers || [];
+  const referencedPaths = new Set();
+  const missingPdfRecords = [];
+  const hashMismatches = [];
+  const verifiedPdfRecords = [];
+
+  for (const paper of papers) {
+    if (!paper.pdfPath) continue;
+    const absolute = path.join(library, paper.pdfPath);
+    referencedPaths.add(path.normalize(paper.pdfPath));
+    if (!fs.existsSync(absolute)) {
+      missingPdfRecords.push(paperBrief(paper));
+      continue;
+    }
+    if (!options.fast && paper.pdfSha256) {
+      const actual = await sha256File(absolute);
+      if (actual !== paper.pdfSha256) {
+        hashMismatches.push({
+          record: paperBrief(paper),
+          expected: paper.pdfSha256,
+          actual,
+        });
+      } else {
+        verifiedPdfRecords.push(paperBrief(paper));
+      }
+    }
+  }
+
+  const objectsRoot = path.join(library, "objects");
+  const objectFiles = await collectFiles(objectsRoot, file => file.toLowerCase().endsWith(".pdf"));
+  const orphanObjects = objectFiles
+    .map(file => path.relative(library, file))
+    .filter(rel => !referencedPaths.has(path.normalize(rel)))
+    .sort();
+  const doiRepairPlan = planRepairDoi(db);
+  const duplicatePdfHashGroups = duplicatePdfGroups(db);
+  const duplicateDoiGroups = duplicateGroupsBy(papers, paper => paper.doi ? normalizeDoi(paper.doi) : null);
+
+  const ok = missingPdfRecords.length === 0
+    && hashMismatches.length === 0
+    && orphanObjects.length === 0
+    && doiRepairPlan.normalize.length === 0
+    && doiRepairPlan.clear.length === 0
+    && duplicatePdfHashGroups.length === 0
+    && duplicateDoiGroups.length === 0;
+
+  return {
+    ok,
+    fast: Boolean(options.fast),
+    library,
+    totalPapers: papers.length,
+    recordsWithPdf: papers.filter(paper => paper.pdfPath).length,
+    checkedHashes: options.fast ? 0 : verifiedPdfRecords.length + hashMismatches.length,
+    missingPdfRecords,
+    hashMismatches,
+    orphanObjects,
+    objectFiles: objectFiles.length,
+    duplicatePdfHashGroups: duplicatePdfHashGroups.length,
+    duplicateDoiGroups: duplicateDoiGroups.length,
+    normalizableDoiValues: doiRepairPlan.normalize.length,
+    invalidDoiValues: doiRepairPlan.clear.length,
+  };
+}
+
+function printVerifyReport(report) {
+  console.log(`Integrity: ${report.ok ? "OK" : "FAILED"}`);
+  console.log(`Library: ${report.library}`);
+  console.log("");
+  console.log(`Papers: ${report.totalPapers}`);
+  console.log(`Records with PDF: ${report.recordsWithPdf}`);
+  console.log(`Object PDFs: ${report.objectFiles}`);
+  console.log(`Checked hashes: ${report.checkedHashes}${report.fast ? " (fast mode skipped hashing)" : ""}`);
+  console.log("");
+  console.log(`Missing referenced PDFs: ${report.missingPdfRecords.length}`);
+  console.log(`Hash mismatches: ${report.hashMismatches.length}`);
+  console.log(`Orphan object PDFs: ${report.orphanObjects.length}`);
+  console.log(`Duplicate PDF hash groups: ${report.duplicatePdfHashGroups}`);
+  console.log(`Duplicate DOI groups: ${report.duplicateDoiGroups}`);
+  console.log(`Normalizable DOI values: ${report.normalizableDoiValues}`);
+  console.log(`Invalid DOI values: ${report.invalidDoiValues}`);
+
+  if (report.missingPdfRecords.length) {
+    console.log("");
+    console.log("Missing PDF preview:");
+    for (const record of report.missingPdfRecords.slice(0, 10)) {
+      console.log(`  #${record.id} ${record.doi || "-"} ${record.pdfPath || "-"}`);
+    }
+  }
+  if (report.hashMismatches.length) {
+    console.log("");
+    console.log("Hash mismatch preview:");
+    for (const item of report.hashMismatches.slice(0, 10)) {
+      console.log(`  #${item.record.id} expected ${item.expected.slice(0, 12)}... actual ${item.actual.slice(0, 12)}...`);
+    }
+  }
+  if (report.orphanObjects.length) {
+    console.log("");
+    console.log("Orphan object preview:");
+    for (const rel of report.orphanObjects.slice(0, 10)) console.log(`  ${rel}`);
   }
 }
 
@@ -1349,6 +1472,19 @@ async function main() {
       printStats(stats);
     }
     return 0;
+  }
+
+  if (command === "verify") {
+    const json = readFlag(args, "--json");
+    const fast = readFlag(args, "--fast");
+    const db = await readDb(library);
+    const report = await verifyLibrary(library, db, { fast });
+    if (json) {
+      console.log(JSON.stringify(report, null, 2));
+    } else {
+      printVerifyReport(report);
+    }
+    return report.ok ? 0 : 1;
   }
 
   if (command === "doctor") {
