@@ -1,6 +1,6 @@
 {
   "name": "litvault",
-  "version": "0.1.15",
+  "version": "0.1.16",
   "description": "A DOI-centered local literature vault CLI.",
   "license": "MIT",
   "author": "iipro",

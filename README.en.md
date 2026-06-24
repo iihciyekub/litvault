@@ -11,7 +11,7 @@ It is implemented in Node.js, installs with npm, stores metadata in a local `man
 Install from GitHub:
 
 ```bash
-npm install -g github:iihciyekub/litvault#v0.1.15
+npm install -g github:iihciyekub/litvault#v0.1.16
 litvault --help
 ```
 

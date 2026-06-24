@@ -234,7 +234,7 @@ litvault backup prune --keep 20 --apply
 从 GitHub 安装最新版：
 
 ```bash
-npm install -g github:iihciyekub/litvault#v0.1.15
+npm install -g github:iihciyekub/litvault#v0.1.16
 ```
 
 检查版本：

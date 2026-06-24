@@ -7,8 +7,9 @@ const http = require("node:http");
 const https = require("node:https");
 const os = require("node:os");
 const path = require("node:path");
+const { spawnSync } = require("node:child_process");
 
-const VERSION = "0.1.15";
+const VERSION = "0.1.16";
 const FALLBACK_LIBRARY = path.join(os.homedir(), "litvault-library");
 const DOI_RE = /\b(10\.\d{4,9}\/[-._;()/:A-Z0-9]+)/i;
 const DOI_GLOBAL_RE = /\b(10\.\d{4,9}\/[-._;()/:A-Z0-9]+)/gi;
@@ -152,6 +153,14 @@ function isValidDoi(value) {
   return STRICT_DOI_RE.test(normalizeDoi(value));
 }
 
+function doiLooseKey(value) {
+  return normalizeDoi(value).replace(/[^a-z0-9]+/gi, "");
+}
+
+function doiMatchesFilenameCandidate(filenameDoi, doi) {
+  return normalizeDoi(filenameDoi) === normalizeDoi(doi) || doiLooseKey(filenameDoi) === doiLooseKey(doi);
+}
+
 function findDoiInText(text) {
   const match = DOI_RE.exec(text || "");
   return match ? normalizeDoi(match[1]) : null;
@@ -181,6 +190,15 @@ function findMetadataDoisInText(text) {
 
 function findContentDoisInText(text) {
   return findDoisInText(text).map(doi => ({ doi, source: "pdf-content", detail: "" }));
+}
+
+function scanPdfVisibleTextDoiCandidates(file) {
+  const result = spawnSync("pdftotext", ["-f", "1", "-l", "3", file, "-"], {
+    encoding: "utf8",
+    timeout: 10000,
+  });
+  if (result.error || result.status !== 0 || !result.stdout) return [];
+  return findDoisInText(result.stdout).map(doi => ({ doi, source: "pdf-content", detail: "pdftotext" }));
 }
 
 async function scanPdfDoiCandidates(file) {
@@ -230,6 +248,14 @@ function uniqueDois(items) {
   return dois.filter(doi => !dois.some(other => other !== doi && other.startsWith(doi) && other.length > doi.length));
 }
 
+function sourceForDoi(candidates, doi, preferredSources = []) {
+  const matching = candidates.filter(item => item.doi === doi);
+  for (const source of preferredSources) {
+    if (matching.some(item => item.source === source)) return source;
+  }
+  return matching[0]?.source || null;
+}
+
 async function extractDoiEvidence(file, explicitDoi = null) {
   const candidates = [];
   if (explicitDoi) {
@@ -239,32 +265,49 @@ async function extractDoiEvidence(file, explicitDoi = null) {
       : { status: "no-doi", doi: null, source: null, candidates: [], reason: "Explicit DOI is invalid" };
   }
 
+  candidates.push(...scanPdfVisibleTextDoiCandidates(file));
   candidates.push(...await scanPdfDoiCandidates(file));
   const filenameDoi = findDoiInFilename(file);
   if (filenameDoi) candidates.push({ doi: filenameDoi, source: "filename", detail: path.basename(file) });
 
   const metadataDois = uniqueDois(candidates.filter(item => item.source === "pdf-metadata"));
   const contentDois = uniqueDois(candidates.filter(item => item.source === "pdf-content"));
+  const pdfDois = uniqueDois(candidates.filter(item => item.source === "pdf-content" || item.source === "pdf-metadata"));
+  const filenameMatchedPdfDoi = filenameDoi
+    ? pdfDois.find(candidate => doiMatchesFilenameCandidate(filenameDoi, candidate))
+    : null;
 
   let doi = null;
   let source = null;
-  if (metadataDois.length) {
-    doi = filenameDoi && metadataDois.includes(filenameDoi) ? filenameDoi : metadataDois[0];
-    source = "pdf-metadata";
-    const conflictingMetadata = metadataDois.filter(value => value !== doi);
-    if (conflictingMetadata.length && !filenameDoi) {
-      return { status: "conflict", doi: null, source: null, candidates, reason: "Multiple metadata DOI values" };
-    }
+  if (filenameMatchedPdfDoi) {
+    doi = filenameMatchedPdfDoi;
+    source = sourceForDoi(candidates, doi, ["pdf-content", "pdf-metadata"]);
   } else if (contentDois.length) {
-    doi = contentDois[0];
-    source = "pdf-content";
+    if (contentDois.length > 1 && !filenameDoi) {
+      return { status: "conflict", doi: null, source: null, candidates, reason: "Multiple PDF content DOI values" };
+    }
+    doi = contentDois.length === 1 ? contentDois[0] : filenameDoi;
+    source = contentDois.length === 1
+      ? (metadataDois.includes(doi) ? "pdf-metadata" : "pdf-content")
+      : "filename";
+  } else if (metadataDois.length) {
+    if (metadataDois.length > 1) {
+      if (!filenameDoi) {
+        return { status: "conflict", doi: null, source: null, candidates, reason: "Multiple metadata DOI values" };
+      }
+      doi = filenameDoi;
+      source = "filename";
+    } else {
+      doi = metadataDois[0];
+      source = "pdf-metadata";
+    }
   } else if (filenameDoi) {
     doi = filenameDoi;
     source = "filename";
   }
 
   if (!doi) return { status: "no-doi", doi: null, source: null, candidates, reason: "No DOI found" };
-  if (filenameDoi && filenameDoi !== doi) {
+  if (filenameDoi && !doiMatchesFilenameCandidate(filenameDoi, doi)) {
     return { status: "conflict", doi: null, source: null, candidates, reason: "Filename DOI conflicts with PDF DOI" };
   }
 

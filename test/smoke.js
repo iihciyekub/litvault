@@ -35,6 +35,8 @@ async function main() {
     const pdf = path.join(temp, "paper.pdf");
     const metadataPdf = path.join(temp, "metadata.pdf");
     const filenameDoiPdf = path.join(temp, "10.2468_filename-only.pdf");
+    const sanitizedFilenamePdf = path.join(temp, "10_1002_smj_3512.pdf");
+    const noisyMetadataFilenamePdf = path.join(temp, "10_25300_misq_2024_18340.pdf");
     const conflictPdf = path.join(temp, "10.1111_filename-conflict.pdf");
     const pdf2 = path.join(batch, "nested", "second.pdf");
     const doiFile = path.join(temp, "dois.txt");
@@ -42,6 +44,8 @@ async function main() {
     await fsp.writeFile(pdf, "%PDF-1.4\nDOI 10.1234/example\n", "utf8");
     await fsp.writeFile(metadataPdf, "%PDF-1.4\n<x:xmpmeta><prism:doi>10.1357/metadata-only</prism:doi></x:xmpmeta>\n", "utf8");
     await fsp.writeFile(filenameDoiPdf, "%PDF-1.4\nNo extractable DOI in this PDF body.\n", "utf8");
+    await fsp.writeFile(sanitizedFilenamePdf, "%PDF-1.4\n<x:xmpmeta><prism:doi>10.1002/smj.3512</prism:doi></x:xmpmeta>\n", "utf8");
+    await fsp.writeFile(noisyMetadataFilenamePdf, "%PDF-1.4\n/URI(https://doi.org/10.1017/S0022109021000430)\n/URI(https://doi.org/10.1287/mnsc.2022.4436)\n", "utf8");
     await fsp.writeFile(conflictPdf, "%PDF-1.4\n<x:xmpmeta><prism:doi>10.2222/metadata-conflict</prism:doi></x:xmpmeta>\n", "utf8");
     await fsp.mkdir(path.dirname(pdf2), { recursive: true });
     await fsp.writeFile(pdf2, "%PDF-1.4\nDOI 10.5678/second\n", "utf8");
@@ -81,6 +85,22 @@ async function main() {
     const filenameDoiInfo = JSON.parse(run(["--library", library, "info", "10.2468/filename-only"]));
     if (filenameDoiInfo.doi !== "10.2468/filename-only" || filenameDoiInfo.doiSource !== "filename") {
       throw new Error("filename DOI fallback did not create the expected DOI");
+    }
+    const sanitizedFilenameAdd = run(["add", sanitizedFilenamePdf, "--no-crossref"], { configRoot: temp });
+    if (!sanitizedFilenameAdd.includes("content 1") || sanitizedFilenameAdd.includes("skipped DOI conflicts: 1")) {
+      throw new Error("sanitized filename DOI was incorrectly treated as a conflict");
+    }
+    const sanitizedFilenameInfo = JSON.parse(run(["--library", library, "info", "10.1002/smj.3512"]));
+    if (sanitizedFilenameInfo.doi !== "10.1002/smj.3512" || sanitizedFilenameInfo.doiSource !== "pdf-content") {
+      throw new Error("sanitized filename PDF did not keep the PDF DOI");
+    }
+    const noisyMetadataAdd = run(["add", noisyMetadataFilenamePdf, "--no-crossref"], { configRoot: temp });
+    if (!noisyMetadataAdd.includes("filename 1") || noisyMetadataAdd.includes("skipped DOI conflicts: 1")) {
+      throw new Error("filename DOI did not disambiguate noisy metadata DOI candidates");
+    }
+    const noisyMetadataInfo = JSON.parse(run(["--library", library, "info", "10.25300/misq_2024_18340"]));
+    if (noisyMetadataInfo.doi !== "10.25300/misq_2024_18340" || noisyMetadataInfo.doiSource !== "filename") {
+      throw new Error("noisy metadata PDF did not use filename DOI fallback");
     }
     const scanJson = JSON.parse(run(["scan-doi", metadataPdf, filenameDoiPdf, "--json"], { configRoot: temp }));
     if (scanJson[0].source !== "pdf-metadata" || scanJson[1].source !== "filename") {
@@ -181,11 +201,11 @@ async function main() {
     if (!search.includes("10.1234/example")) throw new Error("search output missing DOI");
 
     const stats = run(["--library", library, "stats"]);
-    if (!stats.includes("Papers: 5") || !stats.includes("With PDF: 4") || !stats.includes("DOI sources:")) {
+    if (!stats.includes("Papers: 7") || !stats.includes("With PDF: 6") || !stats.includes("DOI sources:")) {
       throw new Error("stats output missing expected counts");
     }
     const statsJson = JSON.parse(run(["--library", library, "stats", "--json"]));
-    if (statsJson.totalPapers !== 5 || statsJson.withPdf !== 4 || !statsJson.doiSources.some(item => item.name === "pdf-metadata")) {
+    if (statsJson.totalPapers !== 7 || statsJson.withPdf !== 6 || !statsJson.doiSources.some(item => item.name === "pdf-metadata")) {
       throw new Error("stats JSON missing expected counts");
     }
 
