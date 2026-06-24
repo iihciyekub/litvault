@@ -8,7 +8,7 @@ const https = require("node:https");
 const os = require("node:os");
 const path = require("node:path");
 
-const VERSION = "0.1.4";
+const VERSION = "0.1.5";
 const FALLBACK_LIBRARY = path.join(os.homedir(), "litvault-library");
 const DOI_RE = /\b(10\.\d{4,9}\/[-._;()/:A-Z0-9]+)/i;
 const DOI_GLOBAL_RE = /\b(10\.\d{4,9}\/[-._;()/:A-Z0-9]+)/gi;
@@ -18,7 +18,7 @@ function usage() {
 
 Usage:
   litvault [--library DIR] init [DIR]
-  litvault [--library DIR] add FILE_OR_DIR... [--doi DOI] [--title TITLE] [--tag TAG] [--no-crossref] [--no-recursive]
+  litvault [--library DIR] add FILE_OR_DIR... [--doi DOI] [--title TITLE] [--tag TAG] [--no-crossref] [--no-recursive] [--quiet] [--verbose]
   litvault [--library DIR] import-dois DOI... [--file dois.txt] [--tag TAG] [--no-crossref]
   litvault [--library DIR] get QUERY... --to DIR [--file queries.txt] [--name "{citekey}.pdf"]
   litvault [--library DIR] info QUERY
@@ -380,12 +380,21 @@ async function addPdfBatch(library, files, options) {
   let skippedNoDoi = 0;
   let skippedExistingPdf = 0;
   let skippedDuplicateInput = 0;
+  let processed = 0;
+  const progress = makeProgress(files.length, options.progress);
+  const state = () => ({ processed, imported, updated, skippedNoDoi, skippedExistingPdf, skippedDuplicateInput });
+  const log = message => {
+    if (options.verbose) console.log(message);
+  };
+  progress.render(state());
 
   for (const file of files) {
     const digest = await sha256File(file);
     if (seenInputHashes.has(digest)) {
       skippedDuplicateInput++;
-      console.log(`Skipping duplicate input PDF: ${file}`);
+      processed++;
+      log(`Skipping duplicate input PDF: ${file}`);
+      progress.render(state());
       continue;
     }
     seenInputHashes.set(digest, file);
@@ -393,14 +402,18 @@ async function addPdfBatch(library, files, options) {
     const existingByHash = indexes.byPdfSha256.get(digest);
     if (existingByHash) {
       skippedExistingPdf++;
-      console.log(`Skipping already stored PDF: ${file}  DOI: ${existingByHash.doi || "-"}  citekey: ${existingByHash.citekey || "-"}`);
+      processed++;
+      log(`Skipping already stored PDF: ${file}  DOI: ${existingByHash.doi || "-"}  citekey: ${existingByHash.citekey || "-"}`);
+      progress.render(state());
       continue;
     }
 
     const doi = options.doiArg ? normalizeDoi(options.doiArg) : await findDoiInFile(file);
     if (!doi) {
       skippedNoDoi++;
-      console.error(`Skipping without DOI: ${file}`);
+      processed++;
+      log(`Skipping without DOI: ${file}`);
+      progress.render(state());
       continue;
     }
 
@@ -417,9 +430,12 @@ async function addPdfBatch(library, files, options) {
     paper = result.paper;
     if (result.isNew) imported++;
     else updated++;
-    console.log(`${result.isNew ? "Stored" : "Updated"}: ${paper.citekey}  DOI: ${paper.doi}  PDF: ${file}`);
+    processed++;
+    log(`${result.isNew ? "Stored" : "Updated"}: ${paper.citekey}  DOI: ${paper.doi}  PDF: ${file}`);
+    progress.render(state());
   }
 
+  progress.finish();
   await writeDb(library, db);
   return {
     imported,
@@ -427,6 +443,7 @@ async function addPdfBatch(library, files, options) {
     skippedNoDoi,
     skippedExistingPdf,
     skippedDuplicateInput,
+    processed,
     library,
   };
 }
@@ -486,6 +503,25 @@ function formatBytes(bytes) {
     index++;
   }
   return `${value.toFixed(index === 0 ? 0 : 1)} ${units[index]}`;
+}
+
+function makeProgress(total, enabled) {
+  let lastLength = 0;
+  function render(state) {
+    if (!enabled) return;
+    const done = state.processed || 0;
+    const width = 24;
+    const filled = total ? Math.floor((done / total) * width) : 0;
+    const skipped = (state.skippedExistingPdf || 0) + (state.skippedDuplicateInput || 0) + (state.skippedNoDoi || 0);
+    const bar = `${"#".repeat(filled)}${"-".repeat(width - filled)}`;
+    const text = `Scanning PDFs [${bar}] ${done}/${total} imported:${state.imported || 0} updated:${state.updated || 0} skipped:${skipped}`;
+    process.stderr.write(`\r${text.padEnd(lastLength, " ")}`);
+    lastLength = text.length;
+  }
+  function finish() {
+    if (enabled) process.stderr.write("\n");
+  }
+  return { render, finish };
 }
 
 async function readListFile(file) {
@@ -864,6 +900,8 @@ async function main() {
     const tags = readRepeated(args, "--tag");
     const noCrossref = readFlag(args, "--no-crossref");
     const recursive = !readFlag(args, "--no-recursive");
+    const quiet = readFlag(args, "--quiet");
+    const verbose = readFlag(args, "--verbose");
     if (!args.length) throw new Error("Missing FILE_OR_DIR.");
     if (doiArg && args.length !== 1) throw new Error("--doi can only be used with a single PDF.");
     if (title && args.length !== 1) throw new Error("--title can only be used with a single PDF.");
@@ -871,7 +909,14 @@ async function main() {
     if (!files.length) throw new Error("No PDF files found.");
     if (doiArg && files.length !== 1) throw new Error("--doi can only be used with a single PDF, not a directory or batch.");
     if (title && files.length !== 1) throw new Error("--title can only be used with a single PDF, not a directory or batch.");
-    const result = await addPdfBatch(library, files, { doiArg, title, tags, noCrossref });
+    const result = await addPdfBatch(library, files, {
+      doiArg,
+      title,
+      tags,
+      noCrossref,
+      verbose,
+      progress: !quiet && !verbose && process.stderr.isTTY,
+    });
     console.log(
       `Imported PDFs: ${result.imported}; updated existing records: ${result.updated}; ` +
       `skipped existing PDFs: ${result.skippedExistingPdf}; skipped duplicate input PDFs: ${result.skippedDuplicateInput}; ` +

@@ -108,7 +108,7 @@ litvault export-bib --out ~/Desktop/references.bib
 
 ```bash
 litvault [--library DIR] init [DIR]
-litvault [--library DIR] add FILE_OR_DIR... [--doi DOI] [--title TITLE] [--tag TAG] [--no-crossref] [--no-recursive]
+litvault [--library DIR] add FILE_OR_DIR... [--doi DOI] [--title TITLE] [--tag TAG] [--no-crossref] [--no-recursive] [--quiet] [--verbose]
 litvault [--library DIR] import-dois DOI... [--file dois.txt] [--tag TAG] [--no-crossref]
 litvault [--library DIR] get QUERY... --to DIR [--file queries.txt] [--name "{citekey}.pdf"]
 litvault [--library DIR] info QUERY
@@ -164,6 +164,13 @@ litvault add ~/Downloads/papers --no-crossref
 When importing a directory, `litvault` only processes `.pdf` files. A PDF is imported only if a DOI is found. Files without a DOI are skipped and reported.
 
 During directory import, existing PDFs are skipped before metadata lookup. If a PDF is new but its DOI already exists in the vault, the existing record is updated with the new PDF instead of creating another record.
+
+Default directory imports show a compact progress line and a final summary. Use `--verbose` to print every stored/skipped file, or `--quiet` to print only the final summary:
+
+```bash
+litvault add ~/Downloads/papers --verbose
+litvault add ~/Downloads/papers --quiet
+```
 
 ## DOI Scanning
 
