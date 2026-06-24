@@ -8,7 +8,7 @@ const https = require("node:https");
 const os = require("node:os");
 const path = require("node:path");
 
-const VERSION = "0.1.10";
+const VERSION = "0.1.11";
 const FALLBACK_LIBRARY = path.join(os.homedir(), "litvault-library");
 const DOI_RE = /\b(10\.\d{4,9}\/[-._;()/:A-Z0-9]+)/i;
 const DOI_GLOBAL_RE = /\b(10\.\d{4,9}\/[-._;()/:A-Z0-9]+)/gi;
@@ -154,6 +154,18 @@ async function findDoiInFile(file) {
   } finally {
     await handle.close();
   }
+}
+
+function findDoiInFilename(file) {
+  const ext = path.extname(file);
+  const base = path.basename(file, ext).replace(/\s+\(\d+\)$/g, "");
+  const direct = findDoiInText(base);
+  if (direct && isValidDoi(direct)) return direct;
+
+  const safeName = /^10[._](\d{4,9})[_-](.+)$/i.exec(base);
+  if (!safeName) return null;
+  const candidate = normalizeDoi(`10.${safeName[1]}/${safeName[2]}`);
+  return isValidDoi(candidate) ? candidate : null;
 }
 
 async function ensureLibrary(library) {
@@ -394,9 +406,10 @@ async function addPdfBatch(library, files, options) {
   let skippedNoDoi = 0;
   let skippedExistingPdf = 0;
   let skippedDuplicateInput = 0;
+  let filenameDoiFallback = 0;
   let processed = 0;
   const progress = makeProgress(files.length, options.progress);
-  const state = () => ({ processed, imported, updated, skippedNoDoi, skippedExistingPdf, skippedDuplicateInput });
+  const state = () => ({ processed, imported, updated, skippedNoDoi, skippedExistingPdf, skippedDuplicateInput, filenameDoiFallback });
   const log = message => {
     if (options.verbose) console.log(message);
   };
@@ -422,7 +435,16 @@ async function addPdfBatch(library, files, options) {
       continue;
     }
 
-    const doi = options.doiArg ? normalizeDoi(options.doiArg) : await findDoiInFile(file);
+    let doi = null;
+    if (options.doiArg) {
+      doi = normalizeDoi(options.doiArg);
+    } else {
+      doi = await findDoiInFile(file);
+      if (!doi) {
+        doi = findDoiInFilename(file);
+        if (doi) filenameDoiFallback++;
+      }
+    }
     if (!doi) {
       skippedNoDoi++;
       processed++;
@@ -457,6 +479,7 @@ async function addPdfBatch(library, files, options) {
     skippedNoDoi,
     skippedExistingPdf,
     skippedDuplicateInput,
+    filenameDoiFallback,
     processed,
     library,
   };
@@ -1369,7 +1392,7 @@ async function main() {
     console.log(
       `Imported PDFs: ${result.imported}; updated existing records: ${result.updated}; ` +
       `skipped existing PDFs: ${result.skippedExistingPdf}; skipped duplicate input PDFs: ${result.skippedDuplicateInput}; ` +
-      `skipped without DOI: ${result.skippedNoDoi}; Library: ${result.library}`
+      `used filename DOI fallback: ${result.filenameDoiFallback}; skipped without DOI: ${result.skippedNoDoi}; Library: ${result.library}`
     );
     return result.skippedNoDoi ? 1 : 0;
   }

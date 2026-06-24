@@ -165,7 +165,7 @@ Skip Crossref metadata lookup:
 litvault add ~/Downloads/papers --no-crossref
 ```
 
-When importing a directory, `litvault` only processes `.pdf` files. A PDF is imported only if a DOI is found. Files without a DOI are skipped and reported.
+When importing a directory, `litvault` only processes `.pdf` files. A PDF is imported only if a DOI is found in the PDF text or can be recovered from a DOI-shaped filename. Files without a DOI are skipped and reported.
 
 During directory import, existing PDFs are skipped before metadata lookup. If a PDF is new but its DOI already exists in the vault, the existing record is updated with the new PDF instead of creating another record.
 
@@ -189,6 +189,13 @@ Current DOI scanning is lightweight:
 10.<4-9 digits>/<DOI suffix>
 ```
 
+If no DOI is found in the PDF bytes, `litvault` falls back to the filename. This supports safe DOI filenames where the slash was replaced by an underscore or hyphen:
+
+```text
+10.1111_j.1937-5956.2000.tb00330.x.pdf -> 10.1111/j.1937-5956.2000.tb00330.x
+10.1287_msom.2022.1140 (1).pdf -> 10.1287/msom.2022.1140
+```
+
 It recognizes common forms such as:
 
 ```text
@@ -199,9 +206,9 @@ https://doi.org/10.1000/xyz123
 
 Limitations:
 
-- Scanned-image PDFs are not OCRed.
-- Compressed or deeply encoded PDF text may not be found.
-- A DOI outside the first 4 MB may not be found.
+- Scanned-image PDFs are not OCRed, but they can still be imported if the filename contains a recoverable DOI.
+- Compressed or deeply encoded PDF text may not be found unless the filename contains a recoverable DOI.
+- A DOI outside the first 4 MB may not be found unless the filename contains a recoverable DOI.
 - If a non-literature PDF contains a DOI-shaped string, it may be imported.
 
 The default behavior is conservative: no DOI means no import.

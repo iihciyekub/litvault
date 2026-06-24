@@ -33,10 +33,12 @@ async function main() {
     const cwdOut = path.join(temp, "cwd-out");
     const batch = path.join(temp, "batch");
     const pdf = path.join(temp, "paper.pdf");
+    const filenameDoiPdf = path.join(temp, "10.2468_filename-only.pdf");
     const pdf2 = path.join(batch, "nested", "second.pdf");
     const doiFile = path.join(temp, "dois.txt");
     const selectedBib = path.join(temp, "selected.bib");
     await fsp.writeFile(pdf, "%PDF-1.4\nDOI 10.1234/example\n", "utf8");
+    await fsp.writeFile(filenameDoiPdf, "%PDF-1.4\nNo extractable DOI in this PDF body.\n", "utf8");
     await fsp.mkdir(path.dirname(pdf2), { recursive: true });
     await fsp.writeFile(pdf2, "%PDF-1.4\nDOI 10.5678/second\n", "utf8");
     await fsp.writeFile(doiFile, "10.1234/example\n10.9999/metadata-only)\n", "utf8");
@@ -57,6 +59,14 @@ async function main() {
       "--tag",
       "smoke",
     ], { configRoot: temp });
+    const filenameDoiAdd = run(["add", filenameDoiPdf, "--no-crossref"], { configRoot: temp });
+    if (!filenameDoiAdd.includes("used filename DOI fallback: 1")) {
+      throw new Error("filename DOI fallback was not reported");
+    }
+    const filenameDoiInfo = run(["--library", library, "info", "10.2468/filename-only"]);
+    if (!filenameDoiInfo.includes('"doi": "10.2468/filename-only"')) {
+      throw new Error("filename DOI fallback did not create the expected DOI");
+    }
     run(["add", batch, "--no-crossref", "--tag", "batch"], { configRoot: temp });
     const duplicateAdd = run(["add", batch, "--no-crossref", "--tag", "batch"], { configRoot: temp });
     if (!duplicateAdd.includes("skipped existing PDFs: 1")) {
@@ -124,11 +134,11 @@ async function main() {
     if (!search.includes("10.1234/example")) throw new Error("search output missing DOI");
 
     const stats = run(["--library", library, "stats"]);
-    if (!stats.includes("Papers: 3") || !stats.includes("With PDF: 2")) {
+    if (!stats.includes("Papers: 4") || !stats.includes("With PDF: 3")) {
       throw new Error("stats output missing expected counts");
     }
     const statsJson = JSON.parse(run(["--library", library, "stats", "--json"]));
-    if (statsJson.totalPapers !== 3 || statsJson.withPdf !== 2) {
+    if (statsJson.totalPapers !== 4 || statsJson.withPdf !== 3) {
       throw new Error("stats JSON missing expected counts");
     }
 
