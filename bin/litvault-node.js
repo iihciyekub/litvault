@@ -8,7 +8,7 @@ const https = require("node:https");
 const os = require("node:os");
 const path = require("node:path");
 
-const VERSION = "0.1.13";
+const VERSION = "0.1.14";
 const FALLBACK_LIBRARY = path.join(os.homedir(), "litvault-library");
 const DOI_RE = /\b(10\.\d{4,9}\/[-._;()/:A-Z0-9]+)/i;
 const DOI_GLOBAL_RE = /\b(10\.\d{4,9}\/[-._;()/:A-Z0-9]+)/gi;
@@ -278,8 +278,6 @@ async function findDoiInFile(file) {
 
 async function ensureLibrary(library) {
   await fsp.mkdir(path.join(library, "objects", "sha256"), { recursive: true });
-  await fsp.mkdir(path.join(library, "exports"), { recursive: true });
-  await fsp.mkdir(path.join(library, "notes"), { recursive: true });
   const manifest = path.join(library, "manifest.json");
   if (!fs.existsSync(manifest)) {
     await writeJsonAtomic(manifest, { version: 1, nextId: 1, papers: [] });

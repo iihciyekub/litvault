@@ -52,6 +52,9 @@ async function main() {
     if (!config.includes(library)) throw new Error("configured library missing from config get");
 
     run(["init"], { configRoot: temp });
+    if (fs.existsSync(path.join(library, "exports")) || fs.existsSync(path.join(library, "notes"))) {
+      throw new Error("init should not create unused exports or notes directories");
+    }
     run([
       "add",
       pdf,

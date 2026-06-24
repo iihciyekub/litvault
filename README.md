@@ -46,8 +46,6 @@ By default, the library lives at:
   manifest.json
   objects/
     sha256/
-  exports/
-  notes/
 ```
 
 Use another library directory once:
