@@ -6,7 +6,14 @@ It is implemented in Node.js, installs with npm, stores metadata in a local `man
 
 ## Install
 
-From this project directory:
+Install from GitHub:
+
+```bash
+npm install -g github:iihciyekub/litvault#v0.1.14
+litvault --help
+```
+
+From this project directory during local development:
 
 ```bash
 cd /Users/iipro/iiresearch/litvault
@@ -30,7 +37,7 @@ bin/litvault --help
 
 `litvault` does not require Python or SQLite.
 
-After npm publication:
+If the package is later published to npm:
 
 ```bash
 npm install -g litvault
@@ -250,8 +257,6 @@ litvault import-dois --file dois.txt
 
 `dois.txt` can contain one DOI per line. Empty lines and lines starting with `#` are ignored.
 
-## Export
-
 ## Stats
 
 Show library summary:
@@ -311,6 +316,26 @@ litvault backup prune --keep 20 --apply
 ```
 
 Manifest backups are small JSON index snapshots created before commands such as `dedupe --apply` and `repair-doi --apply` modify `manifest.json`. They do not duplicate PDF objects. `backup prune` only deletes `manifest.backup-*.json` files, and it is a dry run unless `--apply` is provided.
+
+## Safety
+
+`litvault` is designed to avoid destructive storage behavior:
+
+- `add` copies PDFs into the vault instead of moving source files.
+- Stored PDFs are content-addressed by SHA256.
+- Re-importing the same PDF bytes reuses the existing object.
+- Re-importing the same DOI updates the existing record.
+- `manifest.json` writes are atomic.
+- `dedupe --apply` and `repair-doi --apply` create manifest backups first.
+- `backup prune` is a dry run unless `--apply` is provided.
+
+Run an integrity check after large imports or cleanup:
+
+```bash
+litvault verify
+```
+
+For long-term protection against accidental Finder or terminal deletion, back up the whole library directory with Time Machine, `rsync`, or another disk-level backup. `verify` can detect missing or modified vault PDFs, but it cannot restore files unless you have a separate backup.
 
 ## Doctor and Dedupe
 
