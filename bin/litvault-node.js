@@ -8,7 +8,7 @@ const https = require("node:https");
 const os = require("node:os");
 const path = require("node:path");
 
-const VERSION = "0.1.1";
+const VERSION = "0.1.2";
 const FALLBACK_LIBRARY = path.join(os.homedir(), "litvault-library");
 const DOI_RE = /\b(10\.\d{4,9}\/[-._;()/:A-Z0-9]+)/i;
 const DOI_GLOBAL_RE = /\b(10\.\d{4,9}\/[-._;()/:A-Z0-9]+)/gi;
@@ -104,13 +104,18 @@ function defaultLibraryInfo() {
 }
 
 function normalizeDoi(value) {
-  return String(value || "")
+  let doi = String(value || "")
     .trim()
     .replace(/^doi:\s*/i, "")
     .replace(/^https?:\/\/(?:dx\.)?doi\.org\//i, "")
-    .trim()
-    .replace(/[ .;,]+$/g, "")
-    .toLowerCase();
+    .trim();
+
+  doi = doi.replace(/[ \t\r\n.,;:\]}>]+$/g, "");
+  while (doi.endsWith(")") && (doi.match(/\)/g) || []).length > (doi.match(/\(/g) || []).length) {
+    doi = doi.slice(0, -1);
+  }
+
+  return doi.toLowerCase();
 }
 
 function findDoiInText(text) {
