@@ -117,6 +117,8 @@ litvault [--library DIR] search QUERY [--limit N]
 litvault [--library DIR] list [--limit N]
 litvault [--library DIR] stats [--json]
 litvault [--library DIR] verify [--fast] [--json]
+litvault [--library DIR] backup list [--json]
+litvault [--library DIR] backup prune [--keep N] [--apply] [--json]
 litvault [--library DIR] doctor [--json]
 litvault [--library DIR] repair-doi [--apply] [--json]
 litvault [--library DIR] dedupe [--apply] [--json]
@@ -289,6 +291,28 @@ litvault verify --json
 ```
 
 `verify` checks that every PDF referenced by `manifest.json` exists, that stored PDFs still match their SHA256 hashes, that object PDFs are referenced by the manifest, and that DOI/duplicate problems are not present. It returns a non-zero exit code if integrity checks fail.
+
+## Backups
+
+List manifest backups:
+
+```bash
+litvault backup list
+```
+
+Preview cleanup while keeping the newest 20 backups:
+
+```bash
+litvault backup prune --keep 20
+```
+
+Apply cleanup:
+
+```bash
+litvault backup prune --keep 20 --apply
+```
+
+Manifest backups are small JSON index snapshots created before commands such as `dedupe --apply` and `repair-doi --apply` modify `manifest.json`. They do not duplicate PDF objects. `backup prune` only deletes `manifest.backup-*.json` files, and it is a dry run unless `--apply` is provided.
 
 ## Doctor and Dedupe
 

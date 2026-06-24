@@ -8,7 +8,7 @@ const https = require("node:https");
 const os = require("node:os");
 const path = require("node:path");
 
-const VERSION = "0.1.12";
+const VERSION = "0.1.13";
 const FALLBACK_LIBRARY = path.join(os.homedir(), "litvault-library");
 const DOI_RE = /\b(10\.\d{4,9}\/[-._;()/:A-Z0-9]+)/i;
 const DOI_GLOBAL_RE = /\b(10\.\d{4,9}\/[-._;()/:A-Z0-9]+)/gi;
@@ -39,6 +39,8 @@ Usage:
   litvault [--library DIR] list [--limit N]
   litvault [--library DIR] stats [--json]
   litvault [--library DIR] verify [--fast] [--json]
+  litvault [--library DIR] backup list [--json]
+  litvault [--library DIR] backup prune [--keep N] [--apply] [--json]
   litvault [--library DIR] doctor [--json]
   litvault [--library DIR] repair-doi [--apply] [--json]
   litvault [--library DIR] dedupe [--apply] [--json]
@@ -59,6 +61,8 @@ Examples:
   litvault import-dois --file dois.txt
   litvault stats
   litvault verify
+  litvault backup list
+  litvault backup prune --keep 20
   litvault doctor
   litvault repair-doi --apply
   litvault dedupe --apply
@@ -1054,6 +1058,62 @@ function paperBrief(paper) {
   };
 }
 
+async function listManifestBackups(library) {
+  await ensureLibrary(library);
+  const entries = await fsp.readdir(library, { withFileTypes: true });
+  const backups = [];
+  for (const entry of entries) {
+    const match = /^manifest\.backup-(.+)\.json$/.exec(entry.name);
+    if (!entry.isFile() || !match) continue;
+    const file = path.join(library, entry.name);
+    const stat = await fsp.stat(file);
+    backups.push({
+      name: entry.name,
+      path: file,
+      stamp: match[1],
+      bytes: stat.size,
+      mtime: stat.mtime.toISOString(),
+    });
+  }
+  return backups.sort((a, b) => b.name.localeCompare(a.name));
+}
+
+function buildBackupPrunePlan(backups, keep) {
+  const keepCount = Math.max(0, Number.isFinite(keep) ? Math.floor(keep) : 20);
+  return {
+    keep: keepCount,
+    total: backups.length,
+    kept: backups.slice(0, keepCount),
+    remove: backups.slice(keepCount),
+  };
+}
+
+function printBackupList(backups) {
+  console.log(`Manifest backups: ${backups.length}`);
+  const total = backups.reduce((sum, backup) => sum + backup.bytes, 0);
+  console.log(`Total size: ${formatBytes(total)}`);
+  for (const backup of backups) {
+    console.log(`${backup.name}  ${formatBytes(backup.bytes)}  ${backup.mtime}`);
+  }
+}
+
+function printBackupPrunePlan(plan, applied = false) {
+  console.log(`Manifest backups: ${plan.total}`);
+  console.log(`Keep newest: ${plan.keep}`);
+  console.log(`${applied ? "Removed" : "Would remove"}: ${plan.remove.length}`);
+  const bytes = plan.remove.reduce((sum, backup) => sum + backup.bytes, 0);
+  console.log(`${applied ? "Freed" : "Would free"}: ${formatBytes(bytes)}`);
+  if (!applied) console.log("Dry run: no files deleted. Use --apply to prune.");
+  if (plan.remove.length) {
+    console.log("");
+    console.log(`${applied ? "Removed" : "Remove preview"}:`);
+    for (const backup of plan.remove.slice(0, 20)) {
+      console.log(`  ${backup.name}  ${formatBytes(backup.bytes)}`);
+    }
+    if (plan.remove.length > 20) console.log(`  ... ${plan.remove.length - 20} more backups`);
+  }
+}
+
 function metadataScore(paper) {
   let score = 0;
   if (paper.doi) score += 5;
@@ -1721,6 +1781,47 @@ async function main() {
       printVerifyReport(report);
     }
     return report.ok ? 0 : 1;
+  }
+
+  if (command === "backup") {
+    const action = args.shift() || "list";
+    if (action === "list") {
+      const json = readFlag(args, "--json");
+      const backups = await listManifestBackups(library);
+      if (json) {
+        console.log(JSON.stringify({
+          library,
+          count: backups.length,
+          totalBytes: backups.reduce((sum, backup) => sum + backup.bytes, 0),
+          backups,
+        }, null, 2));
+      } else {
+        printBackupList(backups);
+      }
+      return 0;
+    }
+    if (action === "prune") {
+      const json = readFlag(args, "--json");
+      const apply = readFlag(args, "--apply");
+      const keep = Number(readOption(args, "--keep", "20"));
+      if (!Number.isFinite(keep) || keep < 0) throw new Error("--keep must be a non-negative number.");
+      const backups = await listManifestBackups(library);
+      const plan = buildBackupPrunePlan(backups, keep);
+      if (apply) {
+        for (const backup of plan.remove) await fsp.unlink(backup.path);
+      }
+      if (json) {
+        console.log(JSON.stringify({
+          library,
+          applied: apply,
+          plan,
+        }, null, 2));
+      } else {
+        printBackupPrunePlan(plan, apply);
+      }
+      return 0;
+    }
+    throw new Error(`Unknown backup action: ${action}`);
   }
 
   if (command === "doctor") {

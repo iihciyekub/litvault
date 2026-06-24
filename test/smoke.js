@@ -145,6 +145,26 @@ async function main() {
       throw new Error("repair-doi apply did not apply expected DOI fixes");
     }
 
+    await fsp.writeFile(path.join(library, "manifest.backup-2000-01-01T00-00-00-000Z.json"), "{}\n", "utf8");
+    await fsp.writeFile(path.join(library, "manifest.backup-2000-01-02T00-00-00-000Z.json"), "{}\n", "utf8");
+    await fsp.writeFile(path.join(library, "manifest.backup-2000-01-03T00-00-00-000Z.json"), "{}\n", "utf8");
+    const backupList = run(["--library", library, "backup", "list"]);
+    if (!backupList.includes("Manifest backups:") || !backupList.includes("manifest.backup-2000-01-03T00-00-00-000Z.json")) {
+      throw new Error("backup list did not show expected manifest backups");
+    }
+    const backupPruneDryRun = run(["--library", library, "backup", "prune", "--keep", "2"]);
+    if (!backupPruneDryRun.includes("Dry run") || !backupPruneDryRun.includes("Would remove:")) {
+      throw new Error("backup prune dry-run did not report planned removal");
+    }
+    const backupPruneApply = run(["--library", library, "backup", "prune", "--keep", "2", "--apply"]);
+    if (!backupPruneApply.includes("Removed:")) {
+      throw new Error("backup prune apply did not report removal");
+    }
+    const backupListJson = JSON.parse(run(["--library", library, "backup", "list", "--json"]));
+    if (backupListJson.count !== 2) {
+      throw new Error("backup prune did not keep expected number of backups");
+    }
+
     const verify = run(["--library", library, "verify"]);
     if (!verify.includes("Integrity: OK") || !verify.includes("Hash mismatches: 0")) {
       throw new Error("verify did not report clean integrity");
