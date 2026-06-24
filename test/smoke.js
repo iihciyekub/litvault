@@ -33,12 +33,16 @@ async function main() {
     const cwdOut = path.join(temp, "cwd-out");
     const batch = path.join(temp, "batch");
     const pdf = path.join(temp, "paper.pdf");
+    const metadataPdf = path.join(temp, "metadata.pdf");
     const filenameDoiPdf = path.join(temp, "10.2468_filename-only.pdf");
+    const conflictPdf = path.join(temp, "10.1111_filename-conflict.pdf");
     const pdf2 = path.join(batch, "nested", "second.pdf");
     const doiFile = path.join(temp, "dois.txt");
     const selectedBib = path.join(temp, "selected.bib");
     await fsp.writeFile(pdf, "%PDF-1.4\nDOI 10.1234/example\n", "utf8");
+    await fsp.writeFile(metadataPdf, "%PDF-1.4\n<x:xmpmeta><prism:doi>10.1357/metadata-only</prism:doi></x:xmpmeta>\n", "utf8");
     await fsp.writeFile(filenameDoiPdf, "%PDF-1.4\nNo extractable DOI in this PDF body.\n", "utf8");
+    await fsp.writeFile(conflictPdf, "%PDF-1.4\n<x:xmpmeta><prism:doi>10.2222/metadata-conflict</prism:doi></x:xmpmeta>\n", "utf8");
     await fsp.mkdir(path.dirname(pdf2), { recursive: true });
     await fsp.writeFile(pdf2, "%PDF-1.4\nDOI 10.5678/second\n", "utf8");
     await fsp.writeFile(doiFile, "10.1234/example\n10.9999/metadata-only)\n", "utf8");
@@ -59,13 +63,33 @@ async function main() {
       "--tag",
       "smoke",
     ], { configRoot: temp });
+    const metadataDoiAdd = run(["add", metadataPdf, "--no-crossref"], { configRoot: temp });
+    if (!metadataDoiAdd.includes("metadata 1")) {
+      throw new Error("metadata DOI source was not reported");
+    }
+    const metadataDoiInfo = JSON.parse(run(["--library", library, "info", "10.1357/metadata-only"]));
+    if (metadataDoiInfo.doiSource !== "pdf-metadata") {
+      throw new Error("metadata DOI source was not stored");
+    }
     const filenameDoiAdd = run(["add", filenameDoiPdf, "--no-crossref"], { configRoot: temp });
-    if (!filenameDoiAdd.includes("used filename DOI fallback: 1")) {
+    if (!filenameDoiAdd.includes("filename 1")) {
       throw new Error("filename DOI fallback was not reported");
     }
-    const filenameDoiInfo = run(["--library", library, "info", "10.2468/filename-only"]);
-    if (!filenameDoiInfo.includes('"doi": "10.2468/filename-only"')) {
+    const filenameDoiInfo = JSON.parse(run(["--library", library, "info", "10.2468/filename-only"]));
+    if (filenameDoiInfo.doi !== "10.2468/filename-only" || filenameDoiInfo.doiSource !== "filename") {
       throw new Error("filename DOI fallback did not create the expected DOI");
+    }
+    const scanJson = JSON.parse(run(["scan-doi", metadataPdf, filenameDoiPdf, "--json"], { configRoot: temp }));
+    if (scanJson[0].source !== "pdf-metadata" || scanJson[1].source !== "filename") {
+      throw new Error("scan-doi JSON did not report expected DOI sources");
+    }
+    const conflictScan = spawnSync(process.execPath, [cli, "scan-doi", conflictPdf], {
+      cwd: root,
+      encoding: "utf8",
+      env: { ...process.env, XDG_CONFIG_HOME: path.join(temp, "xdg") },
+    });
+    if (conflictScan.status !== 2 || !conflictScan.stdout.includes("Status: conflict")) {
+      throw new Error("scan-doi did not report DOI conflicts");
     }
     run(["add", batch, "--no-crossref", "--tag", "batch"], { configRoot: temp });
     const duplicateAdd = run(["add", batch, "--no-crossref", "--tag", "batch"], { configRoot: temp });
@@ -134,11 +158,11 @@ async function main() {
     if (!search.includes("10.1234/example")) throw new Error("search output missing DOI");
 
     const stats = run(["--library", library, "stats"]);
-    if (!stats.includes("Papers: 4") || !stats.includes("With PDF: 3")) {
+    if (!stats.includes("Papers: 5") || !stats.includes("With PDF: 4") || !stats.includes("DOI sources:")) {
       throw new Error("stats output missing expected counts");
     }
     const statsJson = JSON.parse(run(["--library", library, "stats", "--json"]));
-    if (statsJson.totalPapers !== 4 || statsJson.withPdf !== 3) {
+    if (statsJson.totalPapers !== 5 || statsJson.withPdf !== 4 || !statsJson.doiSources.some(item => item.name === "pdf-metadata")) {
       throw new Error("stats JSON missing expected counts");
     }
 

@@ -8,11 +8,22 @@ const https = require("node:https");
 const os = require("node:os");
 const path = require("node:path");
 
-const VERSION = "0.1.11";
+const VERSION = "0.1.12";
 const FALLBACK_LIBRARY = path.join(os.homedir(), "litvault-library");
 const DOI_RE = /\b(10\.\d{4,9}\/[-._;()/:A-Z0-9]+)/i;
 const DOI_GLOBAL_RE = /\b(10\.\d{4,9}\/[-._;()/:A-Z0-9]+)/gi;
 const STRICT_DOI_RE = /^10\.\d{4,9}\/[-._;()/:A-Z0-9]+$/i;
+const DOI_METADATA_PATTERNS = [
+  /(?:prism:doi|crossmark:DOI|pdfx:doi|dc:identifier|WPS-ARTICLEDOI|\/DOI|\/doi)\s*(?:=|>|\\\(|\()?[^<>\r\n]{0,240}?(10\.\d{4,9}\/[-._;()/:A-Z0-9]+)/gi,
+];
+const DOI_SOURCE_RANK = {
+  "input-list": 1,
+  "filename": 2,
+  "pdf-content": 3,
+  "pdf-metadata": 4,
+  "zotero": 5,
+  "explicit": 6,
+};
 
 function usage() {
   return `litvault ${VERSION}
@@ -20,6 +31,7 @@ function usage() {
 Usage:
   litvault [--library DIR] init [DIR]
   litvault [--library DIR] add FILE_OR_DIR... [--doi DOI] [--title TITLE] [--tag TAG] [--no-crossref] [--no-recursive] [--quiet] [--verbose]
+  litvault scan-doi FILE_OR_DIR... [--json] [--no-recursive]
   litvault [--library DIR] import-dois DOI... [--file dois.txt] [--tag TAG] [--no-crossref]
   litvault [--library DIR] get QUERY... [--to DIR] [--file queries.txt] [--name "{citekey}.pdf"]
   litvault [--library DIR] info QUERY
@@ -42,6 +54,7 @@ Examples:
   litvault config set library /Volumes/ResearchSSD/litvault-library
   litvault add ~/Downloads/paper.pdf --doi 10.1038/s41586-020-2649-2
   litvault add ~/Downloads/papers
+  litvault scan-doi ~/Downloads/papers
   litvault import-dois 10.1038/s41586-020-2649-2 10.1145/3510003.3510101
   litvault import-dois --file dois.txt
   litvault stats
@@ -122,6 +135,7 @@ function normalizeDoi(value) {
     .replace(/^https?:\/\/(?:dx\.)?doi\.org\//i, "")
     .trim();
 
+  doi = doi.replace(/\)\/[a-z][a-z0-9_-].*$/i, ")");
   doi = doi.replace(/[ \t\r\n.,;:\]}>]+$/g, "");
   while (doi.endsWith(")") && (doi.match(/\)/g) || []).length > (doi.match(/\(/g) || []).length) {
     doi = doi.slice(0, -1);
@@ -143,17 +157,56 @@ function findDoisInText(text) {
   return Array.from(String(text || "").matchAll(DOI_GLOBAL_RE), match => normalizeDoi(match[1]));
 }
 
-async function findDoiInFile(file) {
-  const handle = await fsp.open(file, "r");
-  try {
-    const stat = await handle.stat();
-    const size = Math.min(stat.size, 4_000_000);
-    const buffer = Buffer.alloc(size);
-    await handle.read(buffer, 0, size, 0);
-    return findDoiInText(buffer.toString("utf8")) || findDoiInText(buffer.toString("latin1"));
-  } finally {
-    await handle.close();
+function addDoiCandidate(candidates, doi, source, detail = "") {
+  const normalized = normalizeDoi(doi);
+  if (!normalized || !isValidDoi(normalized)) return;
+  if (candidates.some(item => item.doi === normalized && item.source === source)) return;
+  candidates.push({ doi: normalized, source, detail });
+}
+
+function findMetadataDoisInText(text) {
+  const candidates = [];
+  for (const pattern of DOI_METADATA_PATTERNS) {
+    pattern.lastIndex = 0;
+    for (const match of String(text || "").matchAll(pattern)) {
+      addDoiCandidate(candidates, match[1], "pdf-metadata", match[0].slice(0, 80));
+    }
   }
+  return candidates;
+}
+
+function findContentDoisInText(text) {
+  return findDoisInText(text).map(doi => ({ doi, source: "pdf-content", detail: "" }));
+}
+
+async function scanPdfDoiCandidates(file) {
+  const candidates = [];
+  const seen = new Set();
+  const addMany = items => {
+    for (const item of items) {
+      const key = `${item.source}:${item.doi}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      candidates.push(item);
+    }
+  };
+
+  await new Promise((resolve, reject) => {
+    const stream = fs.createReadStream(file, { highWaterMark: 1024 * 1024 });
+    let carry = "";
+    stream.on("data", chunk => {
+      const text = carry + chunk.toString("latin1");
+      addMany(findMetadataDoisInText(text));
+      if (!candidates.some(item => item.source === "pdf-content")) {
+        addMany(findContentDoisInText(text).slice(0, 5));
+      }
+      carry = text.slice(-4096);
+    });
+    stream.on("error", reject);
+    stream.on("end", resolve);
+  });
+
+  return candidates;
 }
 
 function findDoiInFilename(file) {
@@ -166,6 +219,57 @@ function findDoiInFilename(file) {
   if (!safeName) return null;
   const candidate = normalizeDoi(`10.${safeName[1]}/${safeName[2]}`);
   return isValidDoi(candidate) ? candidate : null;
+}
+
+function uniqueDois(items) {
+  const dois = Array.from(new Set(items.map(item => item.doi).filter(Boolean)));
+  return dois.filter(doi => !dois.some(other => other !== doi && other.startsWith(doi) && other.length > doi.length));
+}
+
+async function extractDoiEvidence(file, explicitDoi = null) {
+  const candidates = [];
+  if (explicitDoi) {
+    const doi = normalizeDoi(explicitDoi);
+    return isValidDoi(doi)
+      ? { status: "ok", doi, source: "explicit", candidates: [{ doi, source: "explicit", detail: "--doi" }] }
+      : { status: "no-doi", doi: null, source: null, candidates: [], reason: "Explicit DOI is invalid" };
+  }
+
+  candidates.push(...await scanPdfDoiCandidates(file));
+  const filenameDoi = findDoiInFilename(file);
+  if (filenameDoi) candidates.push({ doi: filenameDoi, source: "filename", detail: path.basename(file) });
+
+  const metadataDois = uniqueDois(candidates.filter(item => item.source === "pdf-metadata"));
+  const contentDois = uniqueDois(candidates.filter(item => item.source === "pdf-content"));
+
+  let doi = null;
+  let source = null;
+  if (metadataDois.length) {
+    doi = filenameDoi && metadataDois.includes(filenameDoi) ? filenameDoi : metadataDois[0];
+    source = "pdf-metadata";
+    const conflictingMetadata = metadataDois.filter(value => value !== doi);
+    if (conflictingMetadata.length && !filenameDoi) {
+      return { status: "conflict", doi: null, source: null, candidates, reason: "Multiple metadata DOI values" };
+    }
+  } else if (contentDois.length) {
+    doi = contentDois[0];
+    source = "pdf-content";
+  } else if (filenameDoi) {
+    doi = filenameDoi;
+    source = "filename";
+  }
+
+  if (!doi) return { status: "no-doi", doi: null, source: null, candidates, reason: "No DOI found" };
+  if (filenameDoi && filenameDoi !== doi) {
+    return { status: "conflict", doi: null, source: null, candidates, reason: "Filename DOI conflicts with PDF DOI" };
+  }
+
+  return { status: "ok", doi, source, candidates };
+}
+
+async function findDoiInFile(file) {
+  const evidence = await extractDoiEvidence(file);
+  return evidence.status === "ok" ? evidence.doi : null;
 }
 
 async function ensureLibrary(library) {
@@ -308,6 +412,20 @@ async function metadataForDoi(doi, title = "", noCrossref = false) {
   return metadata;
 }
 
+function shouldReplaceDoiSource(currentSource, nextSource) {
+  return (DOI_SOURCE_RANK[nextSource] || 0) >= (DOI_SOURCE_RANK[currentSource] || 0);
+}
+
+function applyDoiEvidenceToPaper(paper, metadata) {
+  if (!metadata.doiSource || !shouldReplaceDoiSource(paper.doiSource, metadata.doiSource)) return;
+  paper.doiSource = metadata.doiSource;
+  paper.doiEvidence = metadata.doiEvidence || {
+    source: metadata.doiSource,
+    candidates: metadata.doi ? [{ doi: normalizeDoi(metadata.doi), source: metadata.doiSource }] : [],
+  };
+  paper.doiEvidenceAt = nowIso();
+}
+
 async function upsertPaper(library, metadata, pdf, tags = []) {
   const db = await readDb(library);
   const doi = metadata.doi ? normalizeDoi(metadata.doi) : null;
@@ -340,6 +458,7 @@ async function upsertPaper(library, metadata, pdf, tags = []) {
   paper.tags = Array.from(new Set([...(paper.tags || []), ...tags])).sort();
   paper.zoteroKey = metadata.zoteroKey || paper.zoteroKey || null;
   paper.zoteroLibrary = metadata.zoteroLibrary || paper.zoteroLibrary || null;
+  applyDoiEvidenceToPaper(paper, metadata);
   paper.updatedAt = timestamp;
 
   await writeDb(library, db);
@@ -389,6 +508,7 @@ function applyMetadataToPaper(db, indexes, metadata, pdfData, tags = []) {
   paper.tags = Array.from(new Set([...(paper.tags || []), ...tags])).sort();
   paper.zoteroKey = metadata.zoteroKey || paper.zoteroKey || null;
   paper.zoteroLibrary = metadata.zoteroLibrary || paper.zoteroLibrary || null;
+  applyDoiEvidenceToPaper(paper, metadata);
   paper.updatedAt = timestamp;
 
   if (paper.doi) indexes.byDoi.set(paper.doi, paper);
@@ -406,10 +526,14 @@ async function addPdfBatch(library, files, options) {
   let skippedNoDoi = 0;
   let skippedExistingPdf = 0;
   let skippedDuplicateInput = 0;
+  let skippedDoiConflict = 0;
+  let explicitDoi = 0;
+  let metadataDoi = 0;
+  let contentDoi = 0;
   let filenameDoiFallback = 0;
   let processed = 0;
   const progress = makeProgress(files.length, options.progress);
-  const state = () => ({ processed, imported, updated, skippedNoDoi, skippedExistingPdf, skippedDuplicateInput, filenameDoiFallback });
+  const state = () => ({ processed, imported, updated, skippedNoDoi, skippedExistingPdf, skippedDuplicateInput, skippedDoiConflict, filenameDoiFallback });
   const log = message => {
     if (options.verbose) console.log(message);
   };
@@ -435,28 +559,52 @@ async function addPdfBatch(library, files, options) {
       continue;
     }
 
-    let doi = null;
-    if (options.doiArg) {
-      doi = normalizeDoi(options.doiArg);
-    } else {
-      doi = await findDoiInFile(file);
-      if (!doi) {
-        doi = findDoiInFilename(file);
-        if (doi) filenameDoiFallback++;
+    const evidence = await extractDoiEvidence(file, options.doiArg);
+    if (evidence.status === "conflict") {
+      skippedDoiConflict++;
+      processed++;
+      log(`Skipping DOI conflict: ${file}  ${evidence.reason}`);
+      for (const candidate of evidence.candidates.slice(0, 6)) {
+        log(`  candidate ${candidate.source}: ${candidate.doi}`);
       }
+      progress.render(state());
+      continue;
     }
-    if (!doi) {
+    if (evidence.status !== "ok") {
       skippedNoDoi++;
       processed++;
       log(`Skipping without DOI: ${file}`);
       progress.render(state());
       continue;
     }
+    const doi = evidence.doi;
+    if (evidence.source === "explicit") explicitDoi++;
+    else if (evidence.source === "pdf-metadata") metadataDoi++;
+    else if (evidence.source === "pdf-content") contentDoi++;
+    else if (evidence.source === "filename") filenameDoiFallback++;
 
     let paper = indexes.byDoi.get(doi);
-    let metadata = { doi, title: options.title || "", authors: [] };
+    let metadata = {
+      doi,
+      title: options.title || "",
+      authors: [],
+      doiSource: evidence.source,
+      doiEvidence: {
+        source: evidence.source,
+        candidates: evidence.candidates.map(item => ({
+          doi: item.doi,
+          source: item.source,
+          detail: item.detail || "",
+        })),
+      },
+    };
     if (!paper || !paper.title || !paper.authors?.length || !paper.year) {
-      metadata = await metadataForDoi(doi, options.title || "", options.noCrossref);
+      metadata = {
+        ...metadata,
+        ...(await metadataForDoi(doi, options.title || "", options.noCrossref)),
+        doiSource: metadata.doiSource,
+        doiEvidence: metadata.doiEvidence,
+      };
     } else if (options.title) {
       metadata.title = options.title;
     }
@@ -479,6 +627,10 @@ async function addPdfBatch(library, files, options) {
     skippedNoDoi,
     skippedExistingPdf,
     skippedDuplicateInput,
+    skippedDoiConflict,
+    explicitDoi,
+    metadataDoi,
+    contentDoi,
     filenameDoiFallback,
     processed,
     library,
@@ -506,6 +658,25 @@ async function collectPdfPaths(inputs, recursive = true) {
     }
   }
   return Array.from(new Set(found));
+}
+
+function printDoiScanResults(results) {
+  for (const result of results) {
+    console.log(result.file);
+    if (result.status === "ok") {
+      console.log(`  DOI: ${result.doi}`);
+      console.log(`  Source: ${result.source}`);
+    } else {
+      console.log(`  Status: ${result.status}`);
+      if (result.reason) console.log(`  Reason: ${result.reason}`);
+    }
+    if (result.candidates?.length) {
+      console.log("  Candidates:");
+      for (const candidate of result.candidates.slice(0, 8)) {
+        console.log(`    ${candidate.source}: ${candidate.doi}`);
+      }
+    }
+  }
 }
 
 async function pathSize(target) {
@@ -567,7 +738,7 @@ function makeProgress(total, enabled) {
     const done = state.processed || 0;
     const width = 24;
     const filled = total ? Math.floor((done / total) * width) : 0;
-    const skipped = (state.skippedExistingPdf || 0) + (state.skippedDuplicateInput || 0) + (state.skippedNoDoi || 0);
+    const skipped = (state.skippedExistingPdf || 0) + (state.skippedDuplicateInput || 0) + (state.skippedNoDoi || 0) + (state.skippedDoiConflict || 0);
     const bar = `${"#".repeat(filled)}${"-".repeat(width - filled)}`;
     const text = `Scanning PDFs [${bar}] ${done}/${total} imported:${state.imported || 0} updated:${state.updated || 0} skipped:${skipped}`;
     process.stderr.write(`\r${text.padEnd(lastLength, " ")}`);
@@ -676,6 +847,7 @@ async function computeStats(library, db) {
   const venueCounts = new Map();
   const doiCounts = new Map();
   const pdfHashCounts = new Map();
+  const doiSourceCounts = new Map();
 
   for (const paper of papers) {
     for (const tag of paper.tags || []) tagCounts.set(tag, (tagCounts.get(tag) || 0) + 1);
@@ -686,6 +858,7 @@ async function computeStats(library, db) {
       doiCounts.set(normalizedDoi, (doiCounts.get(normalizedDoi) || 0) + 1);
     }
     if (paper.pdfSha256) pdfHashCounts.set(paper.pdfSha256, (pdfHashCounts.get(paper.pdfSha256) || 0) + 1);
+    if (paper.doiSource) doiSourceCounts.set(paper.doiSource, (doiSourceCounts.get(paper.doiSource) || 0) + 1);
   }
 
   const top = map => Array.from(map.entries())
@@ -716,6 +889,7 @@ async function computeStats(library, db) {
     topTags: top(tagCounts),
     topTypes: top(typeCounts),
     topVenues: top(venueCounts),
+    doiSources: top(doiSourceCounts),
     manifestBytes: manifestSize.bytes,
     objectBytes: objectSize.bytes,
     objectFiles: objectSize.files,
@@ -756,6 +930,11 @@ function printStats(stats) {
     console.log("");
     console.log("Top venues:");
     for (const item of stats.topVenues) console.log(`  ${item.name}: ${item.count}`);
+  }
+  if (stats.doiSources.length) {
+    console.log("");
+    console.log("DOI sources:");
+    for (const item of stats.doiSources) console.log(`  ${item.name}: ${item.count}`);
   }
 }
 
@@ -866,6 +1045,7 @@ function paperBrief(paper) {
   return {
     id: paper.id,
     doi: paper.doi ? normalizeDoi(paper.doi) : null,
+    doiSource: paper.doiSource || null,
     citekey: paper.citekey || null,
     title: paper.title || "",
     year: paper.year || null,
@@ -1247,6 +1427,7 @@ function metadataFromZoteroItem(item, zoteroLibrary) {
     publisher: data.publisher || "",
     url: data.url || "",
     type: data.itemType || "",
+    doiSource: "zotero",
     zoteroKey: item.key || data.key,
     zoteroLibrary,
   };
@@ -1392,9 +1573,38 @@ async function main() {
     console.log(
       `Imported PDFs: ${result.imported}; updated existing records: ${result.updated}; ` +
       `skipped existing PDFs: ${result.skippedExistingPdf}; skipped duplicate input PDFs: ${result.skippedDuplicateInput}; ` +
-      `used filename DOI fallback: ${result.filenameDoiFallback}; skipped without DOI: ${result.skippedNoDoi}; Library: ${result.library}`
+      `skipped DOI conflicts: ${result.skippedDoiConflict}; skipped without DOI: ${result.skippedNoDoi}; ` +
+      `DOI sources: explicit ${result.explicitDoi}, metadata ${result.metadataDoi}, content ${result.contentDoi}, filename ${result.filenameDoiFallback}; ` +
+      `Library: ${result.library}`
     );
-    return result.skippedNoDoi ? 1 : 0;
+    return result.skippedNoDoi || result.skippedDoiConflict ? 1 : 0;
+  }
+
+  if (command === "scan-doi") {
+    const json = readFlag(args, "--json");
+    const recursive = !readFlag(args, "--no-recursive");
+    if (!args.length) throw new Error("Missing FILE_OR_DIR.");
+    const files = await collectPdfPaths(args, recursive);
+    if (!files.length) throw new Error("No PDF files found.");
+    const results = [];
+    for (const file of files) {
+      const evidence = await extractDoiEvidence(file);
+      results.push({
+        file,
+        status: evidence.status,
+        doi: evidence.doi || null,
+        source: evidence.source || null,
+        reason: evidence.reason || null,
+        candidates: evidence.candidates.map(item => ({
+          doi: item.doi,
+          source: item.source,
+          detail: item.detail || "",
+        })),
+      });
+    }
+    if (json) console.log(JSON.stringify(results, null, 2));
+    else printDoiScanResults(results);
+    return results.some(result => result.status === "conflict") ? 2 : results.some(result => result.status !== "ok") ? 1 : 0;
   }
 
   if (command === "import-dois") {
@@ -1407,7 +1617,10 @@ async function main() {
     let failed = 0;
     for (const doi of dois) {
       try {
-        const metadata = await metadataForDoi(doi, "", noCrossref);
+        const metadata = {
+          ...(await metadataForDoi(doi, "", noCrossref)),
+          doiSource: "input-list",
+        };
         const paper = await upsertPaper(library, metadata, null, tags);
         console.log(`Imported: ${paper.citekey}  DOI: ${paper.doi}`);
         imported++;

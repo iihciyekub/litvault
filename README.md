@@ -109,6 +109,7 @@ litvault export-bib --out ~/Desktop/references.bib
 ```bash
 litvault [--library DIR] init [DIR]
 litvault [--library DIR] add FILE_OR_DIR... [--doi DOI] [--title TITLE] [--tag TAG] [--no-crossref] [--no-recursive] [--quiet] [--verbose]
+litvault scan-doi FILE_OR_DIR... [--json] [--no-recursive]
 litvault [--library DIR] import-dois DOI... [--file dois.txt] [--tag TAG] [--no-crossref]
 litvault [--library DIR] get QUERY... [--to DIR] [--file queries.txt] [--name "{citekey}.pdf"]
 litvault [--library DIR] info QUERY
@@ -165,9 +166,11 @@ Skip Crossref metadata lookup:
 litvault add ~/Downloads/papers --no-crossref
 ```
 
-When importing a directory, `litvault` only processes `.pdf` files. A PDF is imported only if a DOI is found in the PDF text or can be recovered from a DOI-shaped filename. Files without a DOI are skipped and reported.
+When importing a directory, `litvault` only processes `.pdf` files. A PDF is imported only if a DOI is found in PDF metadata/content or can be recovered from a DOI-shaped filename. Files without a DOI are skipped and reported.
 
-During directory import, existing PDFs are skipped before metadata lookup. If a PDF is new but its DOI already exists in the vault, the existing record is updated with the new PDF instead of creating another record.
+During directory import, existing PDFs are skipped before DOI extraction and metadata lookup. If a PDF is new but its DOI already exists in the vault, the existing record is updated with the new PDF instead of creating another record.
+
+If PDF metadata/content and the filename produce conflicting DOI values, `litvault` skips that PDF and reports a DOI conflict instead of guessing.
 
 Default directory imports show a compact progress line and a final summary. Use `--verbose` to print every stored/skipped file, or `--quiet` to print only the final summary:
 
@@ -178,11 +181,29 @@ litvault add ~/Downloads/papers --quiet
 
 ## DOI Scanning
 
-Current DOI scanning is lightweight:
+Inspect DOI extraction without importing:
 
-1. Read the first 4 MB of the PDF file.
-2. Decode those bytes as UTF-8.
-3. If no DOI is found, decode as Latin-1.
+```bash
+litvault scan-doi ~/Downloads/paper.pdf
+litvault scan-doi ~/Downloads/papers --json
+```
+
+`scan-doi` reports each file's chosen DOI, source, and candidates. It exits with code `2` if any file has conflicting DOI evidence.
+
+Import-time DOI extraction uses this priority order:
+
+1. Explicit `--doi` value.
+2. PDF metadata DOI from XMP/custom fields such as `prism:doi`, `crossmark:DOI`, `pdfx:doi`, `dc:identifier`, or `WPS-ARTICLEDOI`.
+3. DOI-shaped values found in PDF raw content.
+4. DOI recovered from a safe filename.
+
+When a DOI is stored, `litvault` records the source in `manifest.json` as `doiSource` and stores the candidate evidence in `doiEvidence`.
+
+Current PDF byte scanning is lightweight:
+
+1. Stream through the PDF bytes in chunks.
+2. Decode bytes as Latin-1 so ASCII DOI strings in metadata and raw PDF content remain visible.
+3. Search metadata-like DOI fields first.
 4. Search with this DOI pattern:
 
 ```text
@@ -208,7 +229,7 @@ Limitations:
 
 - Scanned-image PDFs are not OCRed, but they can still be imported if the filename contains a recoverable DOI.
 - Compressed or deeply encoded PDF text may not be found unless the filename contains a recoverable DOI.
-- A DOI outside the first 4 MB may not be found unless the filename contains a recoverable DOI.
+- A DOI hidden inside compressed streams may not be found unless the filename contains a recoverable DOI.
 - If a non-literature PDF contains a DOI-shaped string, it may be imported.
 
 The default behavior is conservative: no DOI means no import.
@@ -245,7 +266,7 @@ Machine-readable output:
 litvault stats --json
 ```
 
-The stats command reports paper counts, DOI/PDF coverage, missing stored PDFs, unique PDF objects, year range, tag/type/venue summaries, and disk usage for the manifest, object store, and whole library.
+The stats command reports paper counts, DOI/PDF coverage, DOI source counts, missing stored PDFs, unique PDF objects, year range, tag/type/venue summaries, and disk usage for the manifest, object store, and whole library.
 
 ## Verify
 
