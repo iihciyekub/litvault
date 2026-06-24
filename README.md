@@ -1,488 +1,372 @@
-# litvault
+# litvault：把散落的论文 PDF 收进一个可靠的小金库
 
-`litvault` is a DOI-centered local literature vault CLI.
+中文 | [English](README.en.md)
 
-It is implemented in Node.js, installs with npm, stores metadata in a local `manifest.json`, and stores PDFs by SHA256 content hash.
-
-## Install
-
-Install from GitHub:
-
-```bash
-npm install -g github:iihciyekub/litvault#v0.1.15
-litvault --help
-```
-
-From this project directory during local development:
-
-```bash
-cd /Users/iipro/iiresearch/litvault
-npm install -g .
-litvault --help
-```
-
-For development:
-
-```bash
-npm link
-litvault --version
-```
-
-Without installing globally:
-
-```bash
-cd /Users/iipro/iiresearch/litvault
-bin/litvault --help
-```
-
-`litvault` does not require Python or SQLite.
-
-If the package is later published to npm:
-
-```bash
-npm install -g litvault
-litvault --help
-```
-
-## Storage
-
-By default, the library lives at:
+如果你的论文 PDF 曾经长这样：
 
 ```text
-~/litvault-library/
-  manifest.json
-  objects/
-    sha256/
+Downloads/
+Desktop/
+某个项目文件夹/
+移动硬盘/不知道哪一层/又一个 papers/
+10.1287_msom.2022.1140 (1).pdf
+final_final_really_final.pdf
 ```
 
-Use another library directory once:
+那 `litvault` 就是给这种场面准备的。
 
-```bash
-litvault --library /path/to/library init
+它是一个命令行文献库工具。你把 PDF 或 DOI 丢给它，它帮你识别 DOI、查元数据、去重、存档、导出 PDF、导出 BibTeX，并且可以随时体检整个库有没有文件丢失或被改坏。
+
+一句话：
+
+```text
+litvault = 以 DOI 为核心的本地论文 PDF 保险库
 ```
 
-Set a persistent default library, for example on an external SSD:
+它不需要 Python，不需要 SQLite，也不强迫你使用 Zotero。所有数据都放在你自己的磁盘上。
 
-```bash
-litvault config set library /Volumes/ResearchSSD/litvault-library
-litvault init
-litvault config get
-```
+## 它能帮你做什么
 
-After that, normal commands use the configured SSD library:
+### 1. 把 PDF 收进统一文献库
 
-```bash
-litvault add ~/Downloads/papers
-litvault list
-```
-
-Override it temporarily:
-
-```bash
-litvault --library ~/litvault-library list
-```
-
-You can also use an environment variable:
-
-```bash
-LITVAULT_LIBRARY=/Volumes/ResearchSSD/litvault-library litvault add ~/Downloads/papers
-```
-
-The DOI is the main identity key. If you import the same DOI again, `litvault` updates the existing record instead of creating a duplicate.
-
-The PDF object store is content-addressed. If the exact same PDF bytes are imported again, the stored PDF object is reused.
-
-Directory imports use in-memory indexes for fast deduplication. On `litvault add DIR`, the CLI loads the manifest once, builds DOI and PDF-hash maps, skips PDFs already stored by SHA256, skips duplicate files within the same input batch, and writes the manifest once at the end.
-
-## Quick Start
-
-```bash
-litvault init
-litvault config set library /Volumes/ResearchSSD/litvault-library
-litvault add ~/Downloads/paper.pdf --doi 10.1038/s41586-020-2649-2
-litvault add ~/Downloads/papers
-litvault import-dois 10.1038/s41586-020-2649-2 10.1145/3510003.3510101
-litvault search transformer
-litvault stats
-litvault info 10.1038/s41586-020-2649-2
-litvault get 10.1038/s41586-020-2649-2
-litvault export-bib --out ~/Desktop/references.bib
-```
-
-## Commands
-
-```bash
-litvault [--library DIR] init [DIR]
-litvault [--library DIR] add FILE_OR_DIR... [--doi DOI] [--title TITLE] [--tag TAG] [--no-crossref] [--no-recursive] [--quiet] [--verbose]
-litvault scan-doi FILE_OR_DIR... [--json] [--no-recursive]
-litvault [--library DIR] import-dois DOI... [--file dois.txt] [--tag TAG] [--no-crossref]
-litvault [--library DIR] get QUERY... [--to DIR] [--file queries.txt] [--name "{citekey}.pdf"]
-litvault [--library DIR] info QUERY
-litvault [--library DIR] search QUERY [--limit N]
-litvault [--library DIR] list [--limit N]
-litvault [--library DIR] stats [--json]
-litvault [--library DIR] verify [--fast] [--json]
-litvault [--library DIR] backup list [--json]
-litvault [--library DIR] backup prune [--keep N] [--apply] [--json]
-litvault [--library DIR] doctor [--json]
-litvault [--library DIR] repair-doi [--apply] [--json]
-litvault [--library DIR] dedupe [--apply] [--json]
-litvault [--library DIR] export-bib [QUERY...] [--file queries.txt] [--out FILE]
-litvault [--library DIR] sync zotero [--dry-run] [--no-copy-pdfs]
-litvault config get
-litvault config set library DIR
-litvault config unset library
-litvault config path
-```
-
-## Add PDFs
-
-Add one PDF with an explicit DOI:
-
-```bash
-litvault add ~/Downloads/paper.pdf --doi 10.1038/s41586-020-2649-2
-```
-
-Add one PDF and let `litvault` scan for a DOI:
+单篇导入：
 
 ```bash
 litvault add ~/Downloads/paper.pdf
 ```
 
-Add a directory recursively:
+整个目录导入：
 
 ```bash
-litvault add ~/Downloads/papers
+litvault add /Volumes/LYSSSD/DID_2164
 ```
 
-Add only PDFs directly inside a directory:
+`litvault` 会只处理 PDF，并尽力找到 DOI。找到 DOI 后，它会把 PDF 复制进文献库，不会移动你的原文件。
 
-```bash
-litvault add ~/Downloads/papers --no-recursive
+### 2. 自动识别 DOI，不只看文件名
+
+导入时，它会按这个顺序找 DOI：
+
+```text
+1. 你手动传入的 --doi
+2. PDF 内部 metadata，比如 prism:doi / crossmark:DOI / dc:identifier
+3. PDF 原始内容里的 DOI
+4. 文件名里的 DOI，比如 10.1111_xxx.pdf
 ```
 
-Add tags:
+比如这个文件名：
 
-```bash
-litvault add ~/Downloads/papers --tag ai --tag methods
+```text
+10.1111_j.1937-5956.2000.tb00330.x.pdf
 ```
 
-Skip Crossref metadata lookup:
+会被识别成：
 
-```bash
-litvault add ~/Downloads/papers --no-crossref
+```text
+10.1111/j.1937-5956.2000.tb00330.x
 ```
 
-When importing a directory, `litvault` only processes `.pdf` files. A PDF is imported only if a DOI is found in PDF metadata/content or can be recovered from a DOI-shaped filename. Files without a DOI are skipped and reported.
+如果 PDF 内部 DOI 和文件名 DOI 打架，`litvault` 不会瞎猜，会跳过并报告冲突。
 
-During directory import, existing PDFs are skipped before DOI extraction and metadata lookup. If a PDF is new but its DOI already exists in the vault, the existing record is updated with the new PDF instead of creating another record.
+### 3. 导入前先检查 DOI 来源
 
-If PDF metadata/content and the filename produce conflicting DOI values, `litvault` skips that PDF and reports a DOI conflict instead of guessing.
-
-Default directory imports show a compact progress line and a final summary. Use `--verbose` to print every stored/skipped file, or `--quiet` to print only the final summary:
-
-```bash
-litvault add ~/Downloads/papers --verbose
-litvault add ~/Downloads/papers --quiet
-```
-
-## DOI Scanning
-
-Inspect DOI extraction without importing:
+不想直接入库？可以先扫描：
 
 ```bash
 litvault scan-doi ~/Downloads/paper.pdf
-litvault scan-doi ~/Downloads/papers --json
 ```
 
-`scan-doi` reports each file's chosen DOI, source, and candidates. It exits with code `2` if any file has conflicting DOI evidence.
+扫目录：
 
-Import-time DOI extraction uses this priority order:
+```bash
+litvault scan-doi /Volumes/LYSSSD/DID_2164
+```
 
-1. Explicit `--doi` value.
-2. PDF metadata DOI from XMP/custom fields such as `prism:doi`, `crossmark:DOI`, `pdfx:doi`, `dc:identifier`, or `WPS-ARTICLEDOI`.
-3. DOI-shaped values found in PDF raw content.
-4. DOI recovered from a safe filename.
-
-When a DOI is stored, `litvault` records the source in `manifest.json` as `doiSource` and stores the candidate evidence in `doiEvidence`.
-
-Current PDF byte scanning is lightweight:
-
-1. Stream through the PDF bytes in chunks.
-2. Decode bytes as Latin-1 so ASCII DOI strings in metadata and raw PDF content remain visible.
-3. Search metadata-like DOI fields first.
-4. Search with this DOI pattern:
+它会告诉你每篇 PDF 的 DOI 是从哪里来的：
 
 ```text
-10.<4-9 digits>/<DOI suffix>
+DOI: 10.1111/j.1937-5956.2000.tb00330.x
+Source: pdf-metadata
+Candidates:
+  pdf-metadata: ...
+  pdf-content: ...
+  filename: ...
 ```
 
-If no DOI is found in the PDF bytes, `litvault` falls back to the filename. This supports safe DOI filenames where the slash was replaced by an underscore or hyphen:
+这对大批量导入特别有用。先看清楚，再动手。
+
+### 4. 自动去重，不重复收同一份 PDF
+
+`litvault` 会给 PDF 算 SHA256。
+
+也就是说，同一份 PDF 哪怕文件名不同：
 
 ```text
-10.1111_j.1937-5956.2000.tb00330.x.pdf -> 10.1111/j.1937-5956.2000.tb00330.x
-10.1287_msom.2022.1140 (1).pdf -> 10.1287/msom.2022.1140
+paper.pdf
+paper (1).pdf
+10.1111_xxx.pdf
 ```
 
-It recognizes common forms such as:
+只要内容完全一样，它就知道这是同一个 PDF。
 
-```text
-10.1038/s41586-020-2649-2
-doi:10.1145/3510003.3510101
-https://doi.org/10.1000/xyz123
-```
+目录导入时，它会先建立内存索引，快速跳过已经入库的 PDF，而不是一条条慢慢查。
 
-Limitations:
+### 5. 用 DOI 把 PDF 拿出来
 
-- Scanned-image PDFs are not OCRed, but they can still be imported if the filename contains a recoverable DOI.
-- Compressed or deeply encoded PDF text may not be found unless the filename contains a recoverable DOI.
-- A DOI hidden inside compressed streams may not be found unless the filename contains a recoverable DOI.
-- If a non-literature PDF contains a DOI-shaped string, it may be imported.
-
-The default behavior is conservative: no DOI means no import.
-
-## Import DOI Lists
-
-Import metadata for many DOIs without PDFs:
+在当前目录导出一篇：
 
 ```bash
-litvault import-dois 10.1038/s41586-020-2649-2 10.1145/3510003.3510101
+litvault get 10.1287/isre.2023.0332
 ```
 
-Import from a text file:
+导出到指定目录：
 
 ```bash
-litvault import-dois --file dois.txt
+litvault get 10.1287/isre.2023.0332 --to ~/Desktop/refs
 ```
 
-`dois.txt` can contain one DOI per line. Empty lines and lines starting with `#` are ignored.
-
-## Stats
-
-Show library summary:
+批量导出：
 
 ```bash
-litvault stats
+litvault get 10.1287/isre.2023.0332 10.1287/mksc.2022.0212 --to ~/Desktop/refs
 ```
 
-Machine-readable output:
+### 6. 导出 BibTeX
+
+整个库导出：
 
 ```bash
-litvault stats --json
+litvault export-bib --out references.bib
 ```
 
-The stats command reports paper counts, DOI/PDF coverage, DOI source counts, missing stored PDFs, unique PDF objects, year range, tag/type/venue summaries, and disk usage for the manifest, object store, and whole library.
+只导出几篇：
 
-## Verify
+```bash
+litvault export-bib 10.1287/isre.2023.0332 --out selected.bib
+```
 
-Run a full integrity check:
+### 7. 随时体检文献库
+
+这条命令很重要：
 
 ```bash
 litvault verify
 ```
 
-Fast mode skips SHA256 re-hashing and checks structure/existence only:
+它会检查：
+
+```text
+manifest.json 里引用的 PDF 是否真的存在
+PDF 内容 SHA256 是否还匹配
+有没有孤儿 PDF
+有没有重复 DOI
+有没有重复 PDF hash
+有没有不合规 DOI
+```
+
+如果你担心“文件是不是被我误删了”“库是不是坏了”，就跑它。
+
+快速检查：
 
 ```bash
 litvault verify --fast
 ```
 
-Machine-readable output:
+### 8. 看库里现在是什么状态
 
 ```bash
-litvault verify --json
+litvault stats
 ```
 
-`verify` checks that every PDF referenced by `manifest.json` exists, that stored PDFs still match their SHA256 hashes, that object PDFs are referenced by the manifest, and that DOI/duplicate problems are not present. It returns a non-zero exit code if integrity checks fail.
+你会看到类似：
 
-## Backups
-
-List manifest backups:
-
-```bash
-litvault backup list
+```text
+Papers: 103
+With DOI: 103
+With PDF: 103
+Missing stored PDFs: 0
+Duplicate DOI values: 0
+Duplicate PDF hashes: 0
+DOI sources:
+  pdf-metadata: ...
+  filename: ...
 ```
 
-Preview cleanup while keeping the newest 20 backups:
+### 9. 修复、去重前会留索引备份
 
-```bash
-litvault backup prune --keep 20
-```
-
-Apply cleanup:
-
-```bash
-litvault backup prune --keep 20 --apply
-```
-
-Manifest backups are small JSON index snapshots created before commands such as `dedupe --apply` and `repair-doi --apply` modify `manifest.json`. They do not duplicate PDF objects. `backup prune` only deletes `manifest.backup-*.json` files, and it is a dry run unless `--apply` is provided.
-
-## Safety
-
-`litvault` is designed to avoid destructive storage behavior:
-
-- `add` copies PDFs into the vault instead of moving source files.
-- Stored PDFs are content-addressed by SHA256.
-- Re-importing the same PDF bytes reuses the existing object.
-- Re-importing the same DOI updates the existing record.
-- `manifest.json` writes are atomic.
-- `dedupe --apply` and `repair-doi --apply` create manifest backups first.
-- `backup prune` is a dry run unless `--apply` is provided.
-
-Run an integrity check after large imports or cleanup:
-
-```bash
-litvault verify
-```
-
-For long-term protection against accidental Finder or terminal deletion, back up the whole library directory with Time Machine, `rsync`, or another disk-level backup. `verify` can detect missing or modified vault PDFs, but it cannot restore files unless you have a separate backup.
-
-## Doctor and Dedupe
-
-Inspect possible index problems:
-
-```bash
-litvault doctor
-litvault doctor --json
-```
-
-`doctor` reports duplicate PDF hash groups, duplicate DOI groups, invalid DOI values, normalizable DOI values, missing stored PDFs, records without PDFs, records without DOIs, and records missing key metadata.
-
-Preview DOI cleanup:
-
-```bash
-litvault repair-doi
-```
-
-Apply DOI cleanup:
+这些命令会改 `manifest.json`：
 
 ```bash
 litvault repair-doi --apply
-```
-
-`repair-doi` normalizes DOI values that can be safely normalized, such as `https://doi.org/...` or trailing punctuation, and clears DOI fields that still do not match the DOI pattern after normalization. It does not delete paper records or PDFs. `--apply` writes a manifest backup before changing anything.
-
-Preview safe duplicate cleanup:
-
-```bash
-litvault dedupe
-```
-
-Apply safe duplicate cleanup:
-
-```bash
 litvault dedupe --apply
 ```
 
-`dedupe` only auto-merges duplicate PDF-hash groups when their DOI values are compatible, meaning all records share the same DOI or only one record has a DOI. If the same PDF hash is attached to multiple different DOIs, it is reported as a conflict and left untouched.
-
-Before applying changes, `dedupe --apply` writes a manifest backup:
+执行前会自动生成：
 
 ```text
 manifest.backup-YYYY-MM-DDTHH-MM-SS-sssZ.json
 ```
 
-## Export
+这些只是索引备份，不会复制 PDF，所以通常很小。
 
-Export the whole library:
-
-```bash
-litvault export-bib --out all.bib
-```
-
-Export selected records:
+查看备份：
 
 ```bash
-litvault export-bib 10.1038/s41586-020-2649-2 10.1145/3510003.3510101 --out selected.bib
+litvault backup list
 ```
 
-Export selected records from a query file:
+清理旧备份，先预览：
 
 ```bash
-litvault export-bib --file dois.txt --out selected.bib
+litvault backup prune --keep 20
 ```
 
-Queries can be DOI, citekey, title text, or internal ID.
-
-## Copy PDFs Out
-
-Copy one PDF:
+真正删除：
 
 ```bash
-litvault get 10.1038/s41586-020-2649-2
+litvault backup prune --keep 20 --apply
 ```
 
-By default, `get` copies PDFs to your current working directory. Use `--to` when you want another directory:
+默认 dry-run，不加 `--apply` 不删东西。
+
+## 安装
+
+从 GitHub 安装最新版：
 
 ```bash
-litvault get 10.1038/s41586-020-2649-2 --to ~/Desktop/refs
+npm install -g github:iihciyekub/litvault#v0.1.15
 ```
 
-Copy many PDFs:
+检查版本：
 
 ```bash
-litvault get 10.1038/s41586-020-2649-2 10.1145/3510003.3510101 --to ~/Desktop/refs
+litvault --version
 ```
 
-Copy from a query file:
+## 初始化
 
-```bash
-litvault get --file dois.txt --to ~/Desktop/refs
-```
-
-Use a filename pattern:
-
-```bash
-litvault get 10.1038/s41586-020-2649-2 --to ~/Desktop/refs --name "{year}-{first_author}-{title}.pdf"
-```
-
-Available filename fields:
+默认库位置是：
 
 ```text
-{id}
-{doi}
-{citekey}
-{year}
-{first_author}
-{title}
+~/litvault-library
 ```
 
-## Zotero Sync
-
-`litvault sync zotero` imports DOI-backed top-level Zotero items through Zotero's local API.
-
-Before syncing:
-
-1. Start Zotero.
-2. Enable local API access in Zotero settings.
-3. Run:
+初始化：
 
 ```bash
-litvault sync zotero --dry-run
-litvault sync zotero
+litvault init
 ```
 
-Metadata and available PDF attachments are imported into `litvault`.
-
-Skip PDF attachment copying:
+如果你想把 PDF 放移动 SSD，非常推荐这样：
 
 ```bash
-litvault sync zotero --no-copy-pdfs
+litvault config set library /Volumes/LYSSSD/litvault-library
+litvault init
 ```
 
-Import from another Zotero library path:
+以后所有命令默认都会用这个库。
+
+查看当前配置：
 
 ```bash
-litvault sync zotero --zotero-library groups/123456
+litvault config get
 ```
 
-The current sync direction is Zotero -> litvault. Local write-back into Zotero is intentionally not included in v0.1.
+## 文献库长什么样
 
-## Notes
+新库很简单：
 
-- DOI is normalized before storage.
-- Same DOI updates the same record.
-- Same PDF bytes reuse the same SHA256 object.
-- BibTeX can be regenerated at any time.
-- Crossref is used for metadata lookup unless `--no-crossref` is passed.
-- Library selection priority is `--library`, then `LITVAULT_LIBRARY`, then `litvault config set library`, then `~/litvault-library`.
+```text
+litvault-library/
+  manifest.json
+  objects/
+    sha256/
+```
+
+`manifest.json` 是索引，记录 DOI、标题、作者、年份、PDF hash 等。
+
+`objects/sha256/` 是真正存 PDF 的地方。PDF 按内容 hash 存，不靠文件名判断身份。
+
+## 推荐工作流
+
+第一次配置：
+
+```bash
+litvault config set library /Volumes/LYSSSD/litvault-library
+litvault init
+```
+
+导入前先扫一遍：
+
+```bash
+litvault scan-doi /Volumes/LYSSSD/DID_2164
+```
+
+正式导入：
+
+```bash
+litvault add /Volumes/LYSSSD/DID_2164
+```
+
+如果只想快速入库，不查 Crossref 元数据：
+
+```bash
+litvault add /Volumes/LYSSSD/DID_2164 --no-crossref
+```
+
+导入后体检：
+
+```bash
+litvault verify
+litvault stats
+```
+
+以后找 PDF：
+
+```bash
+litvault get DOI
+```
+
+导出引用：
+
+```bash
+litvault export-bib --out refs.bib
+```
+
+## 它为什么比较稳
+
+`litvault` 的设计目标不是花哨，而是让你少担心。
+
+它做了这些事：
+
+```text
+导入 PDF 是复制，不移动原文件
+同一 PDF 用 SHA256 去重
+同一 DOI 更新同一条记录
+manifest.json 原子写入
+修复和去重前自动备份 manifest
+verify 可以检查 PDF 是否缺失或被改
+backup prune 默认不删除，必须 --apply
+```
+
+但它不是完整备份系统。
+
+如果你在 Finder 或终端里手动删掉整个 `objects/`，`litvault verify` 能发现问题，但不能凭空恢复文件。
+
+长期安全建议：
+
+```bash
+litvault verify
+```
+
+再配合 Time Machine、`rsync`，或者另一个硬盘备份整个：
+
+```text
+/Volumes/LYSSSD/litvault-library
+```
+
+## 一句话总结
+
+`litvault` 不是帮你“再建一个混乱文件夹”。
+
+它是把 PDF、DOI、引用信息和完整性检查放在一起，让你的论文库变成一个可以长期维护、可以验证、可以导出的本地文献保险库。
