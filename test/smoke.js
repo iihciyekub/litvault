@@ -30,6 +30,7 @@ async function main() {
   try {
     const library = path.join(temp, "library");
     const out = path.join(temp, "out");
+    const cwdOut = path.join(temp, "cwd-out");
     const batch = path.join(temp, "batch");
     const pdf = path.join(temp, "paper.pdf");
     const pdf2 = path.join(batch, "nested", "second.pdf");
@@ -129,6 +130,19 @@ async function main() {
     const statsJson = JSON.parse(run(["--library", library, "stats", "--json"]));
     if (statsJson.totalPapers !== 3 || statsJson.withPdf !== 2) {
       throw new Error("stats JSON missing expected counts");
+    }
+
+    await fsp.mkdir(cwdOut, { recursive: true });
+    const copiedToCwd = run([
+      "--library",
+      library,
+      "get",
+      "10.1234/example",
+      "--name",
+      "{citekey}.pdf",
+    ], { cwd: cwdOut }).trim().split(/\r?\n/)[0];
+    if (!fs.existsSync(copiedToCwd) || fs.realpathSync(path.dirname(copiedToCwd)) !== fs.realpathSync(cwdOut)) {
+      throw new Error("get without --to did not copy into the current working directory");
     }
 
     const copied = run([

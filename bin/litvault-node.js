@@ -8,7 +8,7 @@ const https = require("node:https");
 const os = require("node:os");
 const path = require("node:path");
 
-const VERSION = "0.1.9";
+const VERSION = "0.1.10";
 const FALLBACK_LIBRARY = path.join(os.homedir(), "litvault-library");
 const DOI_RE = /\b(10\.\d{4,9}\/[-._;()/:A-Z0-9]+)/i;
 const DOI_GLOBAL_RE = /\b(10\.\d{4,9}\/[-._;()/:A-Z0-9]+)/gi;
@@ -21,7 +21,7 @@ Usage:
   litvault [--library DIR] init [DIR]
   litvault [--library DIR] add FILE_OR_DIR... [--doi DOI] [--title TITLE] [--tag TAG] [--no-crossref] [--no-recursive] [--quiet] [--verbose]
   litvault [--library DIR] import-dois DOI... [--file dois.txt] [--tag TAG] [--no-crossref]
-  litvault [--library DIR] get QUERY... --to DIR [--file queries.txt] [--name "{citekey}.pdf"]
+  litvault [--library DIR] get QUERY... [--to DIR] [--file queries.txt] [--name "{citekey}.pdf"]
   litvault [--library DIR] info QUERY
   litvault [--library DIR] search QUERY [--limit N]
   litvault [--library DIR] list [--limit N]
@@ -49,6 +49,7 @@ Examples:
   litvault doctor
   litvault repair-doi --apply
   litvault dedupe --apply
+  litvault get 10.1038/s41586-020-2649-2
   litvault get 10.1038/s41586-020-2649-2 10.1145/3510003.3510101 --to ~/Desktop/refs
   litvault export-bib 10.1038/s41586-020-2649-2 --out refs.bib
   litvault sync zotero --dry-run
@@ -1406,8 +1407,7 @@ async function main() {
   if (command === "get") {
     const toArg = readOption(args, "--to");
     const name = readOption(args, "--name", "{citekey}.pdf");
-    if (!toArg) throw new Error("Missing --to DIR");
-    const to = path.resolve(expandHome(toArg));
+    const to = toArg ? path.resolve(expandHome(toArg)) : process.cwd();
     const queries = await queriesFromArgsAndFile(args);
     if (!queries.length) throw new Error("Missing QUERY.");
     await fsp.mkdir(to, { recursive: true });

@@ -100,7 +100,7 @@ litvault import-dois 10.1038/s41586-020-2649-2 10.1145/3510003.3510101
 litvault search transformer
 litvault stats
 litvault info 10.1038/s41586-020-2649-2
-litvault get 10.1038/s41586-020-2649-2 --to ~/Desktop/refs
+litvault get 10.1038/s41586-020-2649-2
 litvault export-bib --out ~/Desktop/references.bib
 ```
 
@@ -110,7 +110,7 @@ litvault export-bib --out ~/Desktop/references.bib
 litvault [--library DIR] init [DIR]
 litvault [--library DIR] add FILE_OR_DIR... [--doi DOI] [--title TITLE] [--tag TAG] [--no-crossref] [--no-recursive] [--quiet] [--verbose]
 litvault [--library DIR] import-dois DOI... [--file dois.txt] [--tag TAG] [--no-crossref]
-litvault [--library DIR] get QUERY... --to DIR [--file queries.txt] [--name "{citekey}.pdf"]
+litvault [--library DIR] get QUERY... [--to DIR] [--file queries.txt] [--name "{citekey}.pdf"]
 litvault [--library DIR] info QUERY
 litvault [--library DIR] search QUERY [--limit N]
 litvault [--library DIR] list [--limit N]
@@ -332,6 +332,12 @@ Queries can be DOI, citekey, title text, or internal ID.
 ## Copy PDFs Out
 
 Copy one PDF:
+
+```bash
+litvault get 10.1038/s41586-020-2649-2
+```
+
+By default, `get` copies PDFs to your current working directory. Use `--to` when you want another directory:
 
 ```bash
 litvault get 10.1038/s41586-020-2649-2 --to ~/Desktop/refs
