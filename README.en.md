@@ -11,8 +11,21 @@ It is implemented in Node.js, installs with npm, stores metadata in a local `man
 Install from GitHub:
 
 ```bash
-npm install -g github:iihciyekub/litvault#v0.1.16
+npm install -g github:iihciyekub/litvault#v0.1.17
 litvault --help
+```
+
+Update to the latest GitHub release:
+
+```bash
+litvault update
+```
+
+Check or preview the update:
+
+```bash
+litvault update --check
+litvault update --dry-run
 ```
 
 From this project directory during local development:
@@ -51,7 +64,7 @@ litvault --help
 By default, the library lives at:
 
 ```text
-~/litvault-library/
+/Volumes/REFSSD/litvault-library/
   manifest.json
   objects/
     sha256/
@@ -66,7 +79,7 @@ litvault --library /path/to/library init
 Set a persistent default library, for example on an external SSD:
 
 ```bash
-litvault config set library /Volumes/ResearchSSD/litvault-library
+litvault config set library /Volumes/REFSSD/litvault-library
 litvault init
 litvault config get
 ```
@@ -81,13 +94,13 @@ litvault list
 Override it temporarily:
 
 ```bash
-litvault --library ~/litvault-library list
+litvault --library /path/to/other-library list
 ```
 
 You can also use an environment variable:
 
 ```bash
-LITVAULT_LIBRARY=/Volumes/ResearchSSD/litvault-library litvault add ~/Downloads/papers
+LITVAULT_LIBRARY=/Volumes/REFSSD/litvault-library litvault add ~/Downloads/papers
 ```
 
 The DOI is the main identity key. If you import the same DOI again, `litvault` updates the existing record instead of creating a duplicate.
@@ -100,7 +113,7 @@ Directory imports use in-memory indexes for fast deduplication. On `litvault add
 
 ```bash
 litvault init
-litvault config set library /Volumes/ResearchSSD/litvault-library
+litvault config set library /Volumes/REFSSD/litvault-library
 litvault add ~/Downloads/paper.pdf --doi 10.1038/s41586-020-2649-2
 litvault add ~/Downloads/papers
 litvault import-dois 10.1038/s41586-020-2649-2 10.1145/3510003.3510101
@@ -487,4 +500,4 @@ The current sync direction is Zotero -> litvault. Local write-back into Zotero i
 - Same PDF bytes reuse the same SHA256 object.
 - BibTeX can be regenerated at any time.
 - Crossref is used for metadata lookup unless `--no-crossref` is passed.
-- Library selection priority is `--library`, then `LITVAULT_LIBRARY`, then `litvault config set library`, then `~/litvault-library`.
+- Library selection priority is `--library`, then `LITVAULT_LIBRARY`, then `litvault config set library`, then `/Volumes/REFSSD/litvault-library`.

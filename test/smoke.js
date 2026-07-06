@@ -51,6 +51,15 @@ async function main() {
     await fsp.writeFile(pdf2, "%PDF-1.4\nDOI 10.5678/second\n", "utf8");
     await fsp.writeFile(doiFile, "10.1234/example\n10.9999/metadata-only)\n", "utf8");
 
+    const defaultConfig = run(["config", "get"], { configRoot: temp });
+    if (!defaultConfig.includes("/Volumes/REFSSD/litvault-library")) {
+      throw new Error("default library should point at REFSSD");
+    }
+    const updateDryRun = run(["update", "--dry-run", "--force", "--ref", "v0.1.18"], { configRoot: temp });
+    if (!updateDryRun.includes("npm install -g github:iihciyekub/litvault#v0.1.18")) {
+      throw new Error("update dry-run did not target the expected GitHub ref");
+    }
+
     run(["config", "set", "library", library], { configRoot: temp });
     const config = run(["config", "get"], { configRoot: temp });
     if (!config.includes(library)) throw new Error("configured library missing from config get");

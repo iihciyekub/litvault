@@ -9,8 +9,9 @@ const os = require("node:os");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 
-const VERSION = "0.1.16";
-const FALLBACK_LIBRARY = path.join(os.homedir(), "litvault-library");
+const VERSION = "0.1.17";
+const GITHUB_REPO = "iihciyekub/litvault";
+const FALLBACK_LIBRARY = path.join("/Volumes", "REFSSD", "litvault-library");
 const DOI_RE = /\b(10\.\d{4,9}\/[-._;()/:A-Z0-9]+)/i;
 const DOI_GLOBAL_RE = /\b(10\.\d{4,9}\/[-._;()/:A-Z0-9]+)/gi;
 const STRICT_DOI_RE = /^10\.\d{4,9}\/[-._;()/:A-Z0-9]+$/i;
@@ -47,14 +48,15 @@ Usage:
   litvault [--library DIR] dedupe [--apply] [--json]
   litvault [--library DIR] export-bib [QUERY...] [--file queries.txt] [--out FILE]
   litvault [--library DIR] sync zotero [--dry-run] [--no-copy-pdfs]
+  litvault update [--check] [--dry-run] [--force] [--ref REF]
   litvault config get
   litvault config set library DIR
   litvault config unset library
   litvault config path
 
 Examples:
-  litvault init ~/litvault-library
-  litvault config set library /Volumes/ResearchSSD/litvault-library
+  litvault init
+  litvault config set library /Volumes/REFSSD/litvault-library
   litvault add ~/Downloads/paper.pdf --doi 10.1038/s41586-020-2649-2
   litvault add ~/Downloads/papers
   litvault scan-doi ~/Downloads/papers
@@ -71,6 +73,7 @@ Examples:
   litvault get 10.1038/s41586-020-2649-2 10.1145/3510003.3510101 --to ~/Desktop/refs
   litvault export-bib 10.1038/s41586-020-2649-2 --out refs.bib
   litvault sync zotero --dry-run
+  litvault update
 `;
 }
 
@@ -1498,6 +1501,91 @@ function readRepeated(args, name) {
   return values.filter(Boolean);
 }
 
+function parseVersionTag(value) {
+  const raw = String(value || "").trim();
+  const match = /^v?(\d+\.\d+\.\d+)$/.exec(raw);
+  if (!match) return null;
+  return { version: match[1], tag: raw.startsWith("v") ? raw : `v${match[1]}` };
+}
+
+function compareVersions(left, right) {
+  const leftParts = String(left).replace(/^v/, "").split(".").map(part => Number.parseInt(part, 10) || 0);
+  const rightParts = String(right).replace(/^v/, "").split(".").map(part => Number.parseInt(part, 10) || 0);
+  for (let i = 0; i < 3; i++) {
+    const diff = (leftParts[i] || 0) - (rightParts[i] || 0);
+    if (diff !== 0) return diff;
+  }
+  return 0;
+}
+
+async function fetchGithubJson(url) {
+  const response = await fetch(url, {
+    headers: {
+      Accept: "application/vnd.github+json",
+      "User-Agent": `litvault/${VERSION}`,
+    },
+  });
+  if (!response.ok) throw new Error(`GitHub API ${response.status} ${response.statusText}`);
+  return response.json();
+}
+
+async function fetchLatestGithubVersion() {
+  const releaseUrl = `https://api.github.com/repos/${GITHUB_REPO}/releases/latest`;
+  try {
+    const release = await fetchGithubJson(releaseUrl);
+    const parsed = parseVersionTag(release.tag_name || release.name);
+    if (parsed) return { ...parsed, source: "latest release" };
+  } catch (error) {
+    // Fall through to tags so repos without GitHub Releases can still self-update.
+  }
+
+  const tags = await fetchGithubJson(`https://api.github.com/repos/${GITHUB_REPO}/tags?per_page=100`);
+  const candidates = tags
+    .map(tag => parseVersionTag(tag.name))
+    .filter(Boolean)
+    .sort((a, b) => compareVersions(b.version, a.version));
+  if (!candidates.length) throw new Error(`No version tags found in ${GITHUB_REPO}.`);
+  return { ...candidates[0], source: "tags" };
+}
+
+async function updateLitvault(args) {
+  const check = readFlag(args, "--check");
+  const dryRun = readFlag(args, "--dry-run");
+  const force = readFlag(args, "--force");
+  const ref = readOption(args, "--ref");
+  if (args.length) throw new Error(`Unknown update option: ${args[0]}`);
+
+  let target;
+  if (ref) {
+    const parsed = parseVersionTag(ref);
+    target = parsed
+      ? { ...parsed, source: "--ref" }
+      : { version: ref.replace(/^v/, ""), tag: ref, source: "--ref" };
+  } else {
+    target = await fetchLatestGithubVersion();
+  }
+
+  const packageSpec = `github:${GITHUB_REPO}#${target.tag}`;
+  console.log(`Current version: ${VERSION}`);
+  console.log(`Latest version: ${target.version} (${target.source})`);
+
+  if (!force && compareVersions(target.version, VERSION) <= 0) {
+    console.log("Already up to date.");
+    return 0;
+  }
+
+  if (check || dryRun) {
+    console.log(`Would run: npm install -g ${packageSpec}`);
+    return 0;
+  }
+
+  const result = spawnSync("npm", ["install", "-g", packageSpec], { stdio: "inherit" });
+  if (result.error) throw result.error;
+  if (result.status !== 0) return result.status || 1;
+  console.log(`Updated litvault to ${target.tag}. Run: litvault --version`);
+  return 0;
+}
+
 async function queriesFromArgsAndFile(args) {
   const file = readOption(args, "--file");
   const values = [...args];
@@ -1598,6 +1686,10 @@ async function main() {
 
   const command = args.shift();
   const library = global.library;
+
+  if (command === "update") {
+    return updateLitvault(args);
+  }
 
   if (command === "config") {
     const action = args.shift();

@@ -38,7 +38,7 @@ litvault add ~/Downloads/paper.pdf
 整个目录导入：
 
 ```bash
-litvault add /Volumes/LYSSSD/DID_2164
+litvault add /Volumes/REFSSD/DID_2164
 ```
 
 `litvault` 会只处理 PDF，并尽力找到 DOI。找到 DOI 后，它会把 PDF 复制进文献库，不会移动你的原文件。
@@ -79,7 +79,7 @@ litvault scan-doi ~/Downloads/paper.pdf
 扫目录：
 
 ```bash
-litvault scan-doi /Volumes/LYSSSD/DID_2164
+litvault scan-doi /Volumes/REFSSD/DID_2164
 ```
 
 它会告诉你每篇 PDF 的 DOI 是从哪里来的：
@@ -234,7 +234,7 @@ litvault backup prune --keep 20 --apply
 从 GitHub 安装最新版：
 
 ```bash
-npm install -g github:iihciyekub/litvault#v0.1.16
+npm install -g github:iihciyekub/litvault#v0.1.17
 ```
 
 检查版本：
@@ -243,12 +243,25 @@ npm install -g github:iihciyekub/litvault#v0.1.16
 litvault --version
 ```
 
+从 GitHub 更新到最新发布版本：
+
+```bash
+litvault update
+```
+
+只检查或预演更新：
+
+```bash
+litvault update --check
+litvault update --dry-run
+```
+
 ## 初始化
 
 默认库位置是：
 
 ```text
-~/litvault-library
+/Volumes/REFSSD/litvault-library
 ```
 
 初始化：
@@ -260,7 +273,7 @@ litvault init
 如果你想把 PDF 放移动 SSD，非常推荐这样：
 
 ```bash
-litvault config set library /Volumes/LYSSSD/litvault-library
+litvault config set library /Volumes/REFSSD/litvault-library
 litvault init
 ```
 
@@ -292,26 +305,26 @@ litvault-library/
 第一次配置：
 
 ```bash
-litvault config set library /Volumes/LYSSSD/litvault-library
+litvault config set library /Volumes/REFSSD/litvault-library
 litvault init
 ```
 
 导入前先扫一遍：
 
 ```bash
-litvault scan-doi /Volumes/LYSSSD/DID_2164
+litvault scan-doi /Volumes/REFSSD/DID_2164
 ```
 
 正式导入：
 
 ```bash
-litvault add /Volumes/LYSSSD/DID_2164
+litvault add /Volumes/REFSSD/DID_2164
 ```
 
 如果只想快速入库，不查 Crossref 元数据：
 
 ```bash
-litvault add /Volumes/LYSSSD/DID_2164 --no-crossref
+litvault add /Volumes/REFSSD/DID_2164 --no-crossref
 ```
 
 导入后体检：
@@ -362,7 +375,7 @@ litvault verify
 再配合 Time Machine、`rsync`，或者另一个硬盘备份整个：
 
 ```text
-/Volumes/LYSSSD/litvault-library
+/Volumes/REFSSD/litvault-library
 ```
 
 ## 一句话总结
