@@ -40,6 +40,7 @@ async function main() {
     const conflictPdf = path.join(temp, "10.1111_filename-conflict.pdf");
     const pdf2 = path.join(batch, "nested", "second.pdf");
     const doiFile = path.join(temp, "dois.txt");
+    const freeTextDoiFile = path.join(temp, "free-text-dois.txt");
     const selectedBib = path.join(temp, "selected.bib");
     await fsp.writeFile(pdf, "%PDF-1.4\nDOI 10.1234/example\n", "utf8");
     await fsp.writeFile(metadataPdf, "%PDF-1.4\n<x:xmpmeta><prism:doi>10.1357/metadata-only</prism:doi></x:xmpmeta>\n", "utf8");
@@ -50,13 +51,22 @@ async function main() {
     await fsp.mkdir(path.dirname(pdf2), { recursive: true });
     await fsp.writeFile(pdf2, "%PDF-1.4\nDOI 10.5678/second\n", "utf8");
     await fsp.writeFile(doiFile, "10.1234/example\n10.9999/metadata-only)\n", "utf8");
+    await fsp.writeFile(freeTextDoiFile, [
+      "These citations were pasted from a browser and BibTeX export.",
+      "Already present: https://doi.org/10.1234/example?utm_source=ignored",
+      "New URL DOI: https://doi.org/10.4242/new-paper.",
+      "BibTeX field: doi = {10.7777/FREE.TEXT-2},",
+      "Wiley-style DOI: doi:10.1002/(SICI)1097-4571(199505)46:4<327::AID-ASI4>3.0.CO;2-0.",
+      "This prose line should not become an invalid DOI value.",
+      "",
+    ].join("\n"), "utf8");
 
     const defaultConfig = run(["config", "get"], { configRoot: temp });
     if (!defaultConfig.includes("/Volumes/REFSSD/litvault-library")) {
       throw new Error("default library should point at REFSSD");
     }
-    const updateDryRun = run(["update", "--dry-run", "--force", "--ref", "v0.1.18"], { configRoot: temp });
-    if (!updateDryRun.includes("npm install -g github:iihciyekub/litvault#v0.1.18")) {
+    const updateDryRun = run(["update", "--dry-run", "--force", "--ref", "v0.1.19"], { configRoot: temp });
+    if (!updateDryRun.includes("npm install -g github:iihciyekub/litvault#v0.1.19")) {
       throw new Error("update dry-run did not target the expected GitHub ref");
     }
 
@@ -166,6 +176,23 @@ async function main() {
     ) {
       throw new Error("missing-dois JSON did not report expected present/missing/invalid DOI values");
     }
+    const freeTextMissingDoisJson = JSON.parse(run([
+      "--library",
+      library,
+      "missing-dois",
+      "--file",
+      freeTextDoiFile,
+      "--json",
+    ]));
+    if (
+      !freeTextMissingDoisJson.present.includes("10.1234/example")
+      || !freeTextMissingDoisJson.missing.includes("10.4242/new-paper")
+      || !freeTextMissingDoisJson.missing.includes("10.7777/free.text-2")
+      || !freeTextMissingDoisJson.missing.includes("10.1002/(sici)1097-4571(199505)46:4<327::aid-asi4>3.0.co;2-0")
+      || freeTextMissingDoisJson.invalid.length !== 0
+    ) {
+      throw new Error("missing-dois did not extract DOI values cleanly from free-form text");
+    }
 
     const manifest = path.join(library, "manifest.json");
     const db = JSON.parse(await fsp.readFile(manifest, "utf8"));
@@ -184,6 +211,9 @@ async function main() {
     if (!doctor.includes("Duplicate PDF hash groups: 1")) {
       throw new Error("doctor did not report duplicate PDF hash group");
     }
+    if (!doctor.includes("Duplicate DOI preview:")) {
+      throw new Error("doctor did not preview duplicate DOI groups");
+    }
     const dedupeDryRun = run(["--library", library, "dedupe"]);
     if (!dedupeDryRun.includes("Records that would be removed: 1")) {
       throw new Error("dedupe dry-run did not plan one removal");
@@ -193,10 +223,37 @@ async function main() {
       throw new Error("dedupe apply did not remove one record");
     }
 
+    const doiDedupeDb = JSON.parse(await fsp.readFile(manifest, "utf8"));
+    const secondRecord = doiDedupeDb.papers.find(paper => paper.doi === "10.5678/second");
+    doiDedupeDb.papers.push({
+      ...secondRecord,
+      id: doiDedupeDb.nextId++,
+      citekey: `${secondRecord.citekey}doidup`,
+      title: "",
+      authors: [],
+      year: null,
+      addedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
+    await fsp.writeFile(manifest, JSON.stringify(doiDedupeDb, null, 2) + "\n", "utf8");
+    const dedupeDoiDryRun = run(["--library", library, "dedupe-doi"]);
+    if (!dedupeDoiDryRun.includes("Safe duplicate DOI groups: 1") || !dedupeDoiDryRun.includes("Records that would be removed: 1")) {
+      throw new Error("dedupe-doi dry-run did not plan one safe DOI merge");
+    }
+    const dedupeDoiApply = run(["--library", library, "dedupe-doi", "--apply"]);
+    if (!dedupeDoiApply.includes("Applied: removed 1 records")) {
+      throw new Error("dedupe-doi apply did not remove one duplicate DOI record");
+    }
+
     const repairDb = JSON.parse(await fsp.readFile(manifest, "utf8"));
     repairDb.papers.find(paper => paper.doi === "10.9999/metadata-only").doi = "not-a-doi";
     repairDb.papers.find(paper => paper.doi === "10.5678/second").doi = "https://doi.org/10.5678/second)";
+    repairDb.papers.find(paper => paper.doi === "10.1234/example").authors = [];
     await fsp.writeFile(manifest, JSON.stringify(repairDb, null, 2) + "\n", "utf8");
+    const repairMetadataPreview = run(["--library", library, "repair-metadata", "--no-crossref"]);
+    if (!/Records missing title\/year\/authors with DOI: [1-9]/.test(repairMetadataPreview) || !repairMetadataPreview.includes("Dry run")) {
+      throw new Error("repair-metadata did not report missing metadata records");
+    }
     const repairPreview = run(["--library", library, "repair-doi"]);
     if (!repairPreview.includes("Normalizable DOI values: 1") || !repairPreview.includes("Invalid DOI values to clear: 1")) {
       throw new Error("repair-doi dry-run did not report expected DOI fixes");

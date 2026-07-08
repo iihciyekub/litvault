@@ -11,7 +11,7 @@ It is implemented in Node.js, installs with npm, stores metadata in a local `man
 Install from GitHub:
 
 ```bash
-npm install -g github:iihciyekub/litvault#v0.1.18
+npm install -g github:iihciyekub/litvault#v0.1.19
 litvault --help
 ```
 
@@ -141,7 +141,9 @@ litvault [--library DIR] verify [--fast] [--json]
 litvault [--library DIR] backup list [--json]
 litvault [--library DIR] backup prune [--keep N] [--apply] [--json]
 litvault [--library DIR] doctor [--json]
+litvault [--library DIR] repair-metadata [--apply] [--json] [--no-crossref]
 litvault [--library DIR] repair-doi [--apply] [--json]
+litvault [--library DIR] dedupe-doi [--apply] [--json] [--keep ID --remove ID...] [--delete-extra-pdfs]
 litvault [--library DIR] dedupe [--apply] [--json]
 litvault [--library DIR] export-bib [QUERY...] [--file queries.txt] [--out FILE]
 litvault [--library DIR] sync zotero [--dry-run] [--no-copy-pdfs]
@@ -271,7 +273,7 @@ Import from a text file:
 litvault import-dois --file dois.txt
 ```
 
-`dois.txt` can contain one DOI per line. Empty lines and lines starting with `#` are ignored.
+`dois.txt` can contain one DOI per line, DOI URLs, BibTeX snippets, or pasted free-form text. `litvault` extracts DOI-looking values from the file and ignores ordinary prose.
 
 Check which DOIs are not already in the vault:
 
@@ -373,6 +375,15 @@ litvault doctor --json
 
 `doctor` reports duplicate PDF hash groups, duplicate DOI groups, invalid DOI values, normalizable DOI values, missing stored PDFs, records without PDFs, records without DOIs, and records missing key metadata.
 
+Fill missing title, year, or author fields from DOI metadata:
+
+```bash
+litvault repair-metadata
+litvault repair-metadata --apply
+```
+
+`repair-metadata` looks up records that have a DOI but are missing title, year, or authors. It fills only missing fields and does not delete records or PDFs. Use `--json` for a full machine-readable plan.
+
 Preview DOI cleanup:
 
 ```bash
@@ -386,6 +397,19 @@ litvault repair-doi --apply
 ```
 
 `repair-doi` normalizes DOI values that can be safely normalized, such as `https://doi.org/...` or trailing punctuation, and clears DOI fields that still do not match the DOI pattern after normalization. It does not delete paper records or PDFs. `--apply` writes a manifest backup before changing anything.
+
+Preview duplicate DOI cleanup:
+
+```bash
+litvault dedupe-doi
+```
+
+`dedupe-doi` auto-merges only duplicate DOI groups that share the same PDF hash, or where only one record has a PDF. If a duplicate DOI group has multiple different PDF hashes, it is reported as a conflict. After checking the records, resolve one conflict manually:
+
+```bash
+litvault dedupe-doi --keep 123 --remove 456
+litvault dedupe-doi --keep 123 --remove 456 --apply --delete-extra-pdfs
+```
 
 Preview safe duplicate cleanup:
 

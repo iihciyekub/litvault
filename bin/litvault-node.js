@@ -9,12 +9,13 @@ const os = require("node:os");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 
-const VERSION = "0.1.18";
+const VERSION = "0.1.19";
 const GITHUB_REPO = "iihciyekub/litvault";
 const FALLBACK_LIBRARY = path.join("/Volumes", "REFSSD", "litvault-library");
-const DOI_RE = /\b(10\.\d{4,9}\/[-._;()/:A-Z0-9]+)/i;
-const DOI_GLOBAL_RE = /\b(10\.\d{4,9}\/[-._;()/:A-Z0-9]+)/gi;
-const STRICT_DOI_RE = /^10\.\d{4,9}\/[-._;()/:A-Z0-9]+$/i;
+const DOI_SUFFIX_RE_SOURCE = String.raw`[-._;()/:,A-Z0-9+%<>=]+`;
+const DOI_RE = new RegExp(String.raw`\b(10\.\d{4,9}/${DOI_SUFFIX_RE_SOURCE})`, "i");
+const DOI_GLOBAL_RE = new RegExp(String.raw`\b(10\.\d{4,9}/${DOI_SUFFIX_RE_SOURCE})`, "gi");
+const STRICT_DOI_RE = new RegExp(String.raw`^10\.\d{4,9}/${DOI_SUFFIX_RE_SOURCE}$`, "i");
 const DOI_METADATA_PATTERNS = [
   /(?:prism:doi|crossmark:DOI|pdfx:doi|dc:identifier|WPS-ARTICLEDOI|\/DOI|\/doi)\s*(?:=|>|\\\(|\()?[^<>\r\n]{0,240}?(10\.\d{4,9}\/[-._;()/:A-Z0-9]+)/gi,
 ];
@@ -45,7 +46,9 @@ Usage:
   litvault [--library DIR] backup list [--json]
   litvault [--library DIR] backup prune [--keep N] [--apply] [--json]
   litvault [--library DIR] doctor [--json]
+  litvault [--library DIR] repair-metadata [--apply] [--json] [--no-crossref]
   litvault [--library DIR] repair-doi [--apply] [--json]
+  litvault [--library DIR] dedupe-doi [--apply] [--json] [--keep ID --remove ID...] [--delete-extra-pdfs]
   litvault [--library DIR] dedupe [--apply] [--json]
   litvault [--library DIR] export-bib [QUERY...] [--file queries.txt] [--out FILE]
   litvault [--library DIR] sync zotero [--dry-run] [--no-copy-pdfs]
@@ -69,7 +72,9 @@ Examples:
   litvault backup list
   litvault backup prune --keep 20
   litvault doctor
+  litvault repair-metadata --apply
   litvault repair-doi --apply
+  litvault dedupe-doi
   litvault dedupe --apply
   litvault get 10.1038/s41586-020-2649-2
   litvault get 10.1038/s41586-020-2649-2 10.1145/3510003.3510101 --to ~/Desktop/refs
@@ -145,6 +150,7 @@ function normalizeDoi(value) {
     .replace(/^https?:\/\/(?:dx\.)?doi\.org\//i, "")
     .trim();
 
+  doi = doi.replace(/<\/[a-z][^>\s]*.*$/i, "");
   doi = doi.replace(/\)\/[a-z][a-z0-9_-].*$/i, ")");
   doi = doi.replace(/[ \t\r\n.,;:\]}>]+$/g, "");
   while (doi.endsWith(")") && (doi.match(/\)/g) || []).length > (doi.match(/\(/g) || []).length) {
@@ -173,6 +179,13 @@ function findDoiInText(text) {
 
 function findDoisInText(text) {
   return Array.from(String(text || "").matchAll(DOI_GLOBAL_RE), match => normalizeDoi(match[1]));
+}
+
+function looksLikeDoiInput(value) {
+  const text = String(value || "").trim();
+  return /^10\./i.test(text)
+    || /^doi\s*[:=]/i.test(text)
+    || /^https?:\/\/(?:dx\.)?doi\.org\//i.test(text);
 }
 
 function addDoiCandidate(candidates, doi, source, detail = "") {
@@ -802,16 +815,11 @@ function makeProgress(total, enabled) {
 
 async function readListFile(file) {
   const text = await fsp.readFile(path.resolve(expandHome(file)), "utf8");
-  const values = [];
+  const values = findDoisInText(text);
   for (const line of text.split(/\r?\n/)) {
     const trimmed = line.trim();
     if (!trimmed || trimmed.startsWith("#")) continue;
-    const dois = findDoisInText(trimmed);
-    if (dois.length) {
-      values.push(...dois);
-    } else {
-      values.push(trimmed);
-    }
+    if (!findDoisInText(trimmed).length && looksLikeDoiInput(trimmed)) values.push(trimmed);
   }
   return values;
 }
@@ -1098,6 +1106,7 @@ function paperBrief(paper) {
     doiSource: paper.doiSource || null,
     citekey: paper.citekey || null,
     title: paper.title || "",
+    authors: paper.authors || [],
     year: paper.year || null,
     pdfSha256: paper.pdfSha256 || null,
     pdfPath: paper.pdfPath || null,
@@ -1348,6 +1357,121 @@ function printDoctorReport(report) {
       console.log(`  ... ${report.duplicatePdfHashGroups.length - previewGroups.length} more groups`);
     }
   }
+
+  const previewDoiGroups = report.duplicateDoiGroups.slice(0, 10);
+  if (previewDoiGroups.length) {
+    console.log("");
+    console.log("Duplicate DOI preview:");
+    for (const group of previewDoiGroups) {
+      console.log(`  ${group.doi} (${group.records.length} records)`);
+      for (const record of group.records.slice(0, 5)) {
+        const hash = record.pdfSha256 ? `${record.pdfSha256.slice(0, 12)}...` : "-";
+        console.log(`    #${record.id} ${record.citekey || "-"} ${hash} ${record.title || ""}`.trimEnd());
+      }
+    }
+    if (report.duplicateDoiGroups.length > previewDoiGroups.length) {
+      console.log(`  ... ${report.duplicateDoiGroups.length - previewDoiGroups.length} more groups`);
+    }
+  }
+
+  const previewMissing = report.recordsMissingMetadata.slice(0, 10);
+  if (previewMissing.length) {
+    console.log("");
+    console.log("Missing metadata preview:");
+    for (const record of previewMissing) {
+      const missing = [];
+      if (!record.title) missing.push("title");
+      if (!record.year) missing.push("year");
+      if (!record.authors?.length) missing.push("authors");
+      console.log(`  #${record.id} ${record.doi || "-"} missing: ${missing.join(", ")}`);
+    }
+    if (report.recordsMissingMetadata.length > previewMissing.length) {
+      console.log(`  ... ${report.recordsMissingMetadata.length - previewMissing.length} more records`);
+    }
+  }
+}
+
+function metadataIssues(paper) {
+  const missing = [];
+  if (!paper.title) missing.push("title");
+  if (!paper.year) missing.push("year");
+  if (!paper.authors?.length) missing.push("authors");
+  return missing;
+}
+
+async function planRepairMetadata(db, options = {}) {
+  const candidates = (db.papers || []).filter(paper => paper.doi && metadataIssues(paper).length);
+  const updates = [];
+  const unchanged = [];
+  const failed = [];
+  for (const paper of candidates) {
+    try {
+      const metadata = await metadataForDoi(paper.doi, "", options.noCrossref);
+      const fields = {};
+      if (!paper.title && metadata.title) fields.title = metadata.title;
+      if (!paper.year && metadata.year) fields.year = metadata.year;
+      if (!paper.authors?.length && metadata.authors?.length) fields.authors = metadata.authors;
+      if (Object.keys(fields).length) {
+        updates.push({
+          record: paperBrief(paper),
+          missing: metadataIssues(paper),
+          fields,
+        });
+      } else {
+        unchanged.push({
+          record: paperBrief(paper),
+          missing: metadataIssues(paper),
+        });
+      }
+    } catch (error) {
+      failed.push({
+        record: paperBrief(paper),
+        missing: metadataIssues(paper),
+        error: error.message,
+      });
+    }
+  }
+  return { candidates: candidates.length, updates, unchanged, failed };
+}
+
+async function applyRepairMetadata(library, db, plan) {
+  const byId = new Map((db.papers || []).map(paper => [paper.id, paper]));
+  let updatedRecords = 0;
+  for (const item of plan.updates) {
+    const paper = byId.get(item.record.id);
+    if (!paper) continue;
+    for (const [field, value] of Object.entries(item.fields)) paper[field] = value;
+    paper.updatedAt = nowIso();
+    updatedRecords++;
+  }
+  let backup = null;
+  if (updatedRecords) {
+    backup = await backupManifest(library);
+    await writeDb(library, db);
+  }
+  return { backup, updatedRecords };
+}
+
+function printRepairMetadataPlan(plan, applied = null) {
+  console.log(`Records missing title/year/authors with DOI: ${plan.candidates}`);
+  console.log(`Records with Crossref updates: ${plan.updates.length}`);
+  console.log(`Records still missing after lookup: ${plan.unchanged.length}`);
+  console.log(`Lookup failures: ${plan.failed.length}`);
+  if (applied) {
+    console.log(`Applied: updated ${applied.updatedRecords} records`);
+    if (applied.backup) console.log(`Backup: ${applied.backup}`);
+  } else {
+    console.log("Dry run: no changes written. Use --apply to fill missing metadata fields.");
+  }
+
+  if (plan.updates.length) {
+    console.log("");
+    console.log("Update preview:");
+    for (const item of plan.updates.slice(0, 10)) {
+      console.log(`  #${item.record.id} ${item.record.doi} fill: ${Object.keys(item.fields).join(", ")}`);
+    }
+    if (plan.updates.length > 10) console.log(`  ... ${plan.updates.length - 10} more records`);
+  }
 }
 
 function mergeRecordIntoCanonical(canonical, duplicate) {
@@ -1373,6 +1497,93 @@ function chooseCanonical(records) {
   return records
     .slice()
     .sort((a, b) => metadataScore(b) - metadataScore(a) || a.id - b.id)[0];
+}
+
+function extraPdfPathsForMergePlans(db, mergePlans) {
+  const removeIds = new Set(mergePlans.flatMap(plan => plan.remove.map(record => record.id)));
+  const remainingPdfPaths = new Set((db.papers || [])
+    .filter(paper => !removeIds.has(paper.id))
+    .map(paper => paper.pdfPath)
+    .filter(Boolean));
+  return uniqueValues(mergePlans
+    .flatMap(plan => plan.remove.map(record => record.pdfPath).filter(Boolean))
+    .filter(pdfPath => !remainingPdfPaths.has(pdfPath)))
+    .sort();
+}
+
+function planDedupeDoi(db, options = {}) {
+  const byId = new Map((db.papers || []).map(paper => [paper.id, paper]));
+  const keepId = options.keepId || null;
+  const removeIds = options.removeIds || [];
+  const mergePlans = [];
+  const conflictGroups = [];
+
+  if (keepId || removeIds.length) {
+    if (!keepId || !removeIds.length) throw new Error("Use --keep ID together with at least one --remove ID.");
+    const canonical = byId.get(keepId);
+    if (!canonical) throw new Error(`No record matched --keep ${keepId}.`);
+    const duplicates = removeIds.map(id => {
+      if (id === keepId) throw new Error("--keep ID cannot also be removed.");
+      const paper = byId.get(id);
+      if (!paper) throw new Error(`No record matched --remove ${id}.`);
+      return paper;
+    });
+    const doi = canonical.doi ? normalizeDoi(canonical.doi) : null;
+    if (!doi) throw new Error("--keep record has no DOI.");
+    for (const duplicate of duplicates) {
+      if (!duplicate.doi || normalizeDoi(duplicate.doi) !== doi) {
+        throw new Error(`--remove ${duplicate.id} does not share DOI ${doi}.`);
+      }
+    }
+    mergePlans.push({
+      doi,
+      canonical: paperBrief(canonical),
+      remove: duplicates.map(paperBrief),
+      mergedRecordIds: duplicates.map(record => record.id),
+      manual: true,
+    });
+    const deletePdfPaths = extraPdfPathsForMergePlans(db, mergePlans);
+    return {
+      safeGroups: 1,
+      conflictGroups: 0,
+      mergePlans,
+      conflictPreview: [],
+      deletePdfPaths,
+      manual: true,
+    };
+  }
+
+  const groups = duplicateGroupsBy(db.papers || [], paper => paper.doi ? normalizeDoi(paper.doi) : null);
+  for (const group of groups) {
+    const records = group.items.slice().sort((a, b) => a.id - b.id);
+    const pdfHashes = uniqueValues(records.map(record => record.pdfSha256).filter(Boolean));
+    if (pdfHashes.length > 1) {
+      conflictGroups.push({
+        doi: group.key,
+        pdfSha256Values: pdfHashes,
+        records: records.map(paperBrief),
+      });
+      continue;
+    }
+    const canonical = chooseCanonical(records);
+    const duplicateRecords = records.filter(record => record.id !== canonical.id);
+    mergePlans.push({
+      doi: group.key,
+      canonical: paperBrief(canonical),
+      remove: duplicateRecords.map(paperBrief),
+      mergedRecordIds: duplicateRecords.map(record => record.id),
+      manual: false,
+    });
+  }
+
+  return {
+    safeGroups: mergePlans.length,
+    conflictGroups: conflictGroups.length,
+    mergePlans,
+    conflictPreview: conflictGroups.slice(0, 10),
+    deletePdfPaths: extraPdfPathsForMergePlans(db, mergePlans),
+    manual: false,
+  };
 }
 
 function planDedupe(db) {
@@ -1427,6 +1638,80 @@ async function applyDedupe(library, db, plan) {
   const backup = await backupManifest(library);
   await writeDb(library, db);
   return { backup, removedRecords: removeIds.size };
+}
+
+async function applyDedupeDoi(library, db, plan, options = {}) {
+  if (plan.deletePdfPaths.length && !options.deleteExtraPdfs) {
+    throw new Error("This DOI merge would leave extra PDF objects. Re-run with --delete-extra-pdfs after checking the preview.");
+  }
+  const byId = new Map((db.papers || []).map(paper => [paper.id, paper]));
+  const removeIds = new Set();
+  for (const mergePlan of plan.mergePlans) {
+    const canonical = byId.get(mergePlan.canonical.id);
+    if (!canonical) continue;
+    for (const remove of mergePlan.remove) {
+      const duplicate = byId.get(remove.id);
+      if (!duplicate) continue;
+      mergeRecordIntoCanonical(canonical, duplicate);
+      removeIds.add(duplicate.id);
+    }
+  }
+  db.papers = (db.papers || []).filter(paper => !removeIds.has(paper.id));
+  const backup = await backupManifest(library);
+  await writeDb(library, db);
+  const deletedPdfPaths = [];
+  if (options.deleteExtraPdfs) {
+    for (const pdfPath of plan.deletePdfPaths) {
+      const absolute = path.join(library, pdfPath);
+      if (fs.existsSync(absolute)) {
+        await fsp.unlink(absolute);
+        deletedPdfPaths.push(pdfPath);
+      }
+    }
+  }
+  return { backup, removedRecords: removeIds.size, deletedPdfPaths };
+}
+
+function printDedupeDoiPlan(plan, applied = null) {
+  console.log(`Safe duplicate DOI groups: ${plan.safeGroups}`);
+  console.log(`Conflict duplicate DOI groups: ${plan.conflictGroups}`);
+  console.log(`Records that would be removed: ${plan.mergePlans.reduce((sum, item) => sum + item.remove.length, 0)}`);
+  console.log(`Extra PDF objects that would be deleted with --delete-extra-pdfs: ${plan.deletePdfPaths.length}`);
+  if (applied) {
+    console.log(`Applied: removed ${applied.removedRecords} records; deleted PDFs ${applied.deletedPdfPaths.length}`);
+    console.log(`Backup: ${applied.backup}`);
+  } else {
+    console.log("Dry run: no changes written. Use --apply to merge safe groups.");
+  }
+
+  if (plan.mergePlans.length) {
+    console.log("");
+    console.log("DOI merge preview:");
+    for (const item of plan.mergePlans.slice(0, 10)) {
+      console.log(`  DOI ${item.doi}`);
+      console.log(`    keep #${item.canonical.id} ${item.canonical.citekey || "-"} ${item.canonical.pdfSha256 ? item.canonical.pdfSha256.slice(0, 12) + "..." : "-"}`);
+      console.log(`    remove: ${item.remove.map(record => `#${record.id}`).join(", ")}`);
+    }
+    if (plan.mergePlans.length > 10) console.log(`  ... ${plan.mergePlans.length - 10} more groups`);
+  }
+
+  if (plan.deletePdfPaths.length) {
+    console.log("");
+    console.log("Extra PDF delete preview:");
+    for (const pdfPath of plan.deletePdfPaths.slice(0, 10)) console.log(`  ${pdfPath}`);
+    if (plan.deletePdfPaths.length > 10) console.log(`  ... ${plan.deletePdfPaths.length - 10} more PDFs`);
+  }
+
+  if (plan.conflictPreview.length) {
+    console.log("");
+    console.log("Conflict preview, not auto-merged:");
+    for (const group of plan.conflictPreview) {
+      console.log(`  DOI ${group.doi} has ${group.pdfSha256Values.length} different PDF hashes`);
+      for (const record of group.records.slice(0, 5)) {
+        console.log(`    #${record.id} ${record.citekey || "-"} ${record.pdfSha256 ? record.pdfSha256.slice(0, 12) + "..." : "-"}`);
+      }
+    }
+  }
 }
 
 function printDedupePlan(plan, applied = null) {
@@ -2008,6 +2293,22 @@ async function main() {
     return 0;
   }
 
+  if (command === "repair-metadata") {
+    const apply = readFlag(args, "--apply");
+    const json = readFlag(args, "--json");
+    const noCrossref = readFlag(args, "--no-crossref");
+    const db = await readDb(library);
+    const plan = await planRepairMetadata(db, { noCrossref });
+    let applied = null;
+    if (apply) applied = await applyRepairMetadata(library, db, plan);
+    if (json) {
+      console.log(JSON.stringify({ plan, applied, library }, null, 2));
+    } else {
+      printRepairMetadataPlan(plan, applied);
+    }
+    return plan.failed.length ? 1 : 0;
+  }
+
   if (command === "repair-doi") {
     const apply = readFlag(args, "--apply");
     const json = readFlag(args, "--json");
@@ -2021,6 +2322,30 @@ async function main() {
       console.log(JSON.stringify({ plan, applied }, null, 2));
     } else {
       printRepairDoiPlan(plan, applied);
+    }
+    return 0;
+  }
+
+  if (command === "dedupe-doi") {
+    const apply = readFlag(args, "--apply");
+    const json = readFlag(args, "--json");
+    const deleteExtraPdfs = readFlag(args, "--delete-extra-pdfs");
+    const keepArg = readOption(args, "--keep");
+    const removeArgs = readRepeated(args, "--remove");
+    if (args.length) throw new Error(`Unknown dedupe-doi option: ${args[0]}`);
+    const keepId = keepArg ? Number(keepArg) : null;
+    const removeIds = removeArgs.map(value => Number(value));
+    if ((keepArg && !Number.isInteger(keepId)) || removeIds.some(value => !Number.isInteger(value))) {
+      throw new Error("--keep and --remove values must be record IDs.");
+    }
+    const db = await readDb(library);
+    const plan = planDedupeDoi(db, { keepId, removeIds });
+    let applied = null;
+    if (apply) applied = await applyDedupeDoi(library, db, plan, { deleteExtraPdfs });
+    if (json) {
+      console.log(JSON.stringify({ plan, applied, library }, null, 2));
+    } else {
+      printDedupeDoiPlan(plan, applied);
     }
     return 0;
   }

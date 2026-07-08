@@ -104,6 +104,8 @@ litvault missing-dois 10.1287/isre.2023.0332 10.1287/mksc.2022.0212
 litvault missing-dois --file dois.txt
 ```
 
+`dois.txt` 不必严格一行一个 DOI；可以是 DOI URL、BibTeX 片段、网页上复制下来的引用文本。`litvault` 会从文件全文里提取像 DOI 的值，普通说明文字会被忽略。
+
 它默认一行输出一个未入库 DOI，适合接着导入：
 
 ```bash
@@ -167,6 +169,7 @@ litvault export-bib 10.1287/isre.2023.0332 --out selected.bib
 
 ```bash
 litvault verify
+litvault doctor
 ```
 
 它会检查：
@@ -181,6 +184,18 @@ PDF 内容 SHA256 是否还匹配
 ```
 
 如果你担心“文件是不是被我误删了”“库是不是坏了”，就跑它。
+
+`doctor` 发现问题后，可以用这些命令处理：
+
+```bash
+litvault repair-metadata
+litvault repair-metadata --apply
+litvault repair-doi --apply
+litvault dedupe-doi
+litvault dedupe-doi --apply
+```
+
+`repair-metadata` 会用 DOI 重新查元数据，只补缺的标题、年份、作者，不会删除记录或 PDF。`dedupe-doi` 只会自动合并安全的重复 DOI；如果同一个 DOI 下有不同 PDF，它会报告冲突，需要你指定保留哪条。
 
 快速检查：
 
@@ -250,7 +265,7 @@ litvault backup prune --keep 20 --apply
 从 GitHub 安装最新版：
 
 ```bash
-npm install -g github:iihciyekub/litvault#v0.1.18
+npm install -g github:iihciyekub/litvault#v0.1.19
 ```
 
 检查版本：
