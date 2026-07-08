@@ -7,7 +7,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 
-const VERSION = "0.1.22";
+const VERSION = "0.1.23";
 const GITHUB_REPO = "iihciyekub/litvault";
 const FALLBACK_LIBRARY = path.join("/Volumes", "REFSSD", "litvault-library");
 const DEFAULT_CROSSREF_DELAY_MS = 250;
@@ -20,7 +20,6 @@ const DOI_METADATA_PATTERNS = [
   /(?:prism:doi|crossmark:DOI|pdfx:doi|dc:identifier|WPS-ARTICLEDOI|\/DOI|\/doi)\s*(?:=|>|\\\(|\()?[^<>\r\n]{0,240}?(10\.\d{4,9}\/[-._;()/:A-Z0-9]+)/gi,
 ];
 const DOI_SOURCE_RANK = {
-  "input-list": 1,
   "filename": 2,
   "pdf-content": 3,
   "pdf-metadata": 4,
@@ -35,7 +34,6 @@ Usage:
   litvault [--library DIR] init [DIR]
   litvault [--library DIR] add FILE_OR_DIR... [--doi DOI] [--title TITLE] [--tag TAG] [--no-crossref] [--crossref-delay MS] [--crossref-retries N] [--no-recursive] [--quiet] [--verbose]
   litvault scan-doi FILE_OR_DIR... [--json] [--no-recursive]
-  litvault [--library DIR] import-dois DOI... [--file dois.txt] [--tag TAG] [--no-crossref] [--crossref-delay MS] [--crossref-retries N]
   litvault [--library DIR] missing-dois DOI... [--file dois.txt] [--json]
   litvault [--library DIR] get QUERY... [--to DIR] [--file queries.txt] [--name "{citekey}.pdf"]
   litvault [--library DIR] info QUERY
@@ -372,11 +370,6 @@ async function sha256File(file) {
   });
 }
 
-async function storePdf(library, source) {
-  const digest = await sha256File(source);
-  return storePdfWithHash(library, source, digest);
-}
-
 async function storePdfWithHash(library, source, digest) {
   const rel = path.join("objects", "sha256", digest.slice(0, 2), digest.slice(2, 4), `${digest}.pdf`);
   const dest = path.join(library, rel);
@@ -537,45 +530,6 @@ function applyDoiEvidenceToPaper(paper, metadata) {
   paper.doiEvidenceAt = nowIso();
 }
 
-async function upsertPaper(library, metadata, pdf, tags = []) {
-  const db = await readDb(library);
-  const doi = metadata.doi ? normalizeDoi(metadata.doi) : null;
-  let paper = doi ? db.papers.find(p => p.doi === doi) : null;
-  if (!paper && metadata.zoteroKey) {
-    paper = db.papers.find(p => p.zoteroKey === metadata.zoteroKey && p.zoteroLibrary === metadata.zoteroLibrary);
-  }
-
-  const pdfData = pdf ? await storePdf(library, pdf) : {};
-  const timestamp = nowIso();
-  const base = makeCitekey(metadata.authors || [], metadata.year, metadata.title || "", doi || pdfData.sha256 || "paper");
-
-  if (!paper) {
-    paper = { id: db.nextId++, addedAt: timestamp };
-    db.papers.push(paper);
-  }
-
-  const existingId = paper.id;
-  paper.doi = doi || paper.doi || null;
-  paper.title = metadata.title || paper.title || "";
-  paper.authors = metadata.authors?.length ? metadata.authors : paper.authors || [];
-  paper.year = metadata.year || paper.year || null;
-  paper.venue = metadata.venue || paper.venue || "";
-  paper.publisher = metadata.publisher || paper.publisher || "";
-  paper.url = metadata.url || paper.url || "";
-  paper.type = metadata.type || paper.type || "";
-  paper.citekey = paper.citekey || uniqueCitekey(db, base, existingId);
-  paper.pdfSha256 = pdfData.sha256 || paper.pdfSha256 || null;
-  paper.pdfPath = pdfData.path || paper.pdfPath || null;
-  paper.tags = Array.from(new Set([...(paper.tags || []), ...tags])).sort();
-  paper.zoteroKey = metadata.zoteroKey || paper.zoteroKey || null;
-  paper.zoteroLibrary = metadata.zoteroLibrary || paper.zoteroLibrary || null;
-  applyDoiEvidenceToPaper(paper, metadata);
-  paper.updatedAt = timestamp;
-
-  await writeDb(library, db);
-  return paper;
-}
-
 function buildDbIndexes(db) {
   const byDoi = new Map();
   const byPdfSha256 = new Map();
@@ -589,6 +543,9 @@ function buildDbIndexes(db) {
 }
 
 function applyMetadataToPaper(db, indexes, metadata, pdfData, tags = []) {
+  if (!pdfData?.sha256 || !pdfData?.path) {
+    throw new Error("Cannot create or update a paper record without a stored PDF.");
+  }
   const doi = metadata.doi ? normalizeDoi(metadata.doi) : null;
   let paper = doi ? indexes.byDoi.get(doi) : null;
   if (!paper && metadata.zoteroKey) {
@@ -1083,6 +1040,7 @@ async function verifyLibrary(library, db, options = {}) {
   const doiRepairPlan = planRepairDoi(db);
   const duplicatePdfHashGroups = duplicatePdfGroups(db);
   const duplicateDoiGroups = duplicateGroupsBy(papers, paper => paper.doi ? normalizeDoi(paper.doi) : null);
+  const recordsWithoutPdf = papers.filter(paper => !paper.pdfPath).map(paperBrief);
 
   const ok = missingPdfRecords.length === 0
     && hashMismatches.length === 0
@@ -1090,7 +1048,8 @@ async function verifyLibrary(library, db, options = {}) {
     && doiRepairPlan.normalize.length === 0
     && doiRepairPlan.clear.length === 0
     && duplicatePdfHashGroups.length === 0
-    && duplicateDoiGroups.length === 0;
+    && duplicateDoiGroups.length === 0
+    && recordsWithoutPdf.length === 0;
 
   return {
     ok,
@@ -1098,6 +1057,7 @@ async function verifyLibrary(library, db, options = {}) {
     library,
     totalPapers: papers.length,
     recordsWithPdf: papers.filter(paper => paper.pdfPath).length,
+    recordsWithoutPdf,
     checkedHashes: options.fast ? 0 : verifiedPdfRecords.length + hashMismatches.length,
     missingPdfRecords,
     hashMismatches,
@@ -1116,6 +1076,7 @@ function printVerifyReport(report) {
   console.log("");
   console.log(`Papers: ${report.totalPapers}`);
   console.log(`Records with PDF: ${report.recordsWithPdf}`);
+  console.log(`Records without PDF: ${report.recordsWithoutPdf.length}`);
   console.log(`Object PDFs: ${report.objectFiles}`);
   console.log(`Checked hashes: ${report.checkedHashes}${report.fast ? " (fast mode skipped hashing)" : ""}`);
   console.log("");
@@ -1132,6 +1093,13 @@ function printVerifyReport(report) {
     console.log("Missing PDF preview:");
     for (const record of report.missingPdfRecords.slice(0, 10)) {
       console.log(`  #${record.id} ${record.doi || "-"} ${record.pdfPath || "-"}`);
+    }
+  }
+  if (report.recordsWithoutPdf.length) {
+    console.log("");
+    console.log("Records without PDF preview:");
+    for (const record of report.recordsWithoutPdf.slice(0, 10)) {
+      console.log(`  #${record.id} ${record.doi || "-"} ${record.citekey || "-"}`);
     }
   }
   if (report.hashMismatches.length) {
@@ -2094,33 +2062,6 @@ async function main() {
     if (json) console.log(JSON.stringify(results, null, 2));
     else printDoiScanResults(results);
     return results.some(result => result.status === "conflict") ? 2 : results.some(result => result.status !== "ok") ? 1 : 0;
-  }
-
-  if (command === "import-dois") {
-    const tags = readRepeated(args, "--tag");
-    const noCrossref = readFlag(args, "--no-crossref");
-    const crossref = createCrossrefClient(readCrossrefOptions(args));
-    const queries = await queriesFromArgsAndFile(args);
-    const dois = doiValuesFromQueries(queries);
-    if (!dois.length) throw new Error("Missing DOI values. Pass DOI... or --file dois.txt.");
-    let imported = 0;
-    let failed = 0;
-    for (const doi of dois) {
-      try {
-        const metadata = {
-          ...(await metadataForDoi(doi, "", noCrossref, crossref)),
-          doiSource: "input-list",
-        };
-        const paper = await upsertPaper(library, metadata, null, tags);
-        console.log(`Imported: ${paper.citekey}  DOI: ${paper.doi}`);
-        imported++;
-      } catch (error) {
-        failed++;
-        console.error(`Failed: ${doi} (${error.message})`);
-      }
-    }
-    console.log(`Imported DOIs: ${imported}; failed: ${failed}; Library: ${library}`);
-    return failed ? 1 : 0;
   }
 
   if (command === "missing-dois") {

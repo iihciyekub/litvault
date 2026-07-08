@@ -78,6 +78,9 @@ async function main() {
     if (help.includes("sync zotero")) {
       throw new Error("help should not advertise removed Zotero sync command");
     }
+    if (help.includes("import-dois")) {
+      throw new Error("help should not advertise DOI-only import commands");
+    }
     if (!help.includes("--crossref-delay MS") || !help.includes("--crossref-retries N")) {
       throw new Error("help should advertise Crossref delay and retry options");
     }
@@ -166,10 +169,13 @@ async function main() {
     if (!verboseDuplicateAdd.includes("Skipping already stored PDF:")) {
       throw new Error("verbose duplicate import did not print per-file details");
     }
-    run(["--library", library, "import-dois", "--file", doiFile, "--no-crossref", "--crossref-delay", "0", "--crossref-retries", "0", "--tag", "doi-list"]);
-    const normalizedInfo = run(["--library", library, "info", "10.9999/metadata-only"]);
-    if (!normalizedInfo.includes('"doi": "10.9999/metadata-only"')) {
-      throw new Error("DOI trailing punctuation was not normalized");
+    const removedImport = spawnSync(process.execPath, [cli, "--library", library, "import-dois", "--file", doiFile], {
+      cwd: root,
+      encoding: "utf8",
+      env: { ...process.env, XDG_CONFIG_HOME: path.join(temp, "xdg") },
+    });
+    if (removedImport.status === 0 || !removedImport.stderr.includes("Unknown command: import-dois")) {
+      throw new Error("removed DOI-only import command should fail as unknown");
     }
     const missingDois = run([
       "--library",
@@ -193,8 +199,9 @@ async function main() {
       "--json",
     ]));
     if (
-      missingDoisJson.missing.length !== 1
-      || missingDoisJson.missing[0] !== "10.4242/new-paper"
+      missingDoisJson.missing.length !== 2
+      || !missingDoisJson.missing.includes("10.4242/new-paper")
+      || !missingDoisJson.missing.includes("10.9999/metadata-only")
       || !missingDoisJson.present.includes("10.1234/example")
       || !missingDoisJson.invalid.includes("not-a-doi")
     ) {
@@ -270,7 +277,7 @@ async function main() {
     }
 
     const repairDb = JSON.parse(await fsp.readFile(manifest, "utf8"));
-    repairDb.papers.find(paper => paper.doi === "10.9999/metadata-only").doi = "not-a-doi";
+    repairDb.papers.find(paper => paper.doi === "10.1357/metadata-only").doi = "not-a-doi";
     repairDb.papers.find(paper => paper.doi === "10.5678/second").doi = "https://doi.org/10.5678/second)";
     repairDb.papers.find(paper => paper.doi === "10.1234/example").authors = [];
     await fsp.writeFile(manifest, JSON.stringify(repairDb, null, 2) + "\n", "utf8");
@@ -286,6 +293,31 @@ async function main() {
     if (!repairApply.includes("Applied: normalized 1; cleared 1")) {
       throw new Error("repair-doi apply did not apply expected DOI fixes");
     }
+
+    const legacyDb = JSON.parse(await fsp.readFile(manifest, "utf8"));
+    legacyDb.papers.push({
+      id: legacyDb.nextId++,
+      doi: "10.9999/legacy-without-pdf",
+      citekey: "legacywithoutpdf",
+      title: "Legacy DOI-only record",
+      authors: [],
+      year: null,
+      pdfSha256: null,
+      pdfPath: null,
+      addedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
+    await fsp.writeFile(manifest, JSON.stringify(legacyDb, null, 2) + "\n", "utf8");
+    const legacyVerify = spawnSync(process.execPath, [cli, "--library", library, "verify"], {
+      cwd: root,
+      encoding: "utf8",
+      env: { ...process.env, XDG_CONFIG_HOME: path.join(temp, "xdg") },
+    });
+    if (legacyVerify.status === 0 || !legacyVerify.stdout.includes("Records without PDF: 1")) {
+      throw new Error("verify should fail for legacy records without PDFs");
+    }
+    legacyDb.papers = legacyDb.papers.filter(paper => paper.citekey !== "legacywithoutpdf");
+    await fsp.writeFile(manifest, JSON.stringify(legacyDb, null, 2) + "\n", "utf8");
 
     await fsp.writeFile(path.join(library, "manifest.backup-2000-01-01T00-00-00-000Z.json"), "{}\n", "utf8");
     await fsp.writeFile(path.join(library, "manifest.backup-2000-01-02T00-00-00-000Z.json"), "{}\n", "utf8");
@@ -312,7 +344,7 @@ async function main() {
       throw new Error("verify did not report clean integrity");
     }
     const verifyJson = JSON.parse(run(["--library", library, "verify", "--json"]));
-    if (!verifyJson.ok || verifyJson.hashMismatches.length !== 0) {
+    if (!verifyJson.ok || verifyJson.hashMismatches.length !== 0 || verifyJson.recordsWithoutPdf.length !== 0) {
       throw new Error("verify JSON did not report clean integrity");
     }
 
@@ -320,11 +352,11 @@ async function main() {
     if (!search.includes("10.1234/example")) throw new Error("search output missing DOI");
 
     const stats = run(["--library", library, "stats"]);
-    if (!stats.includes("Papers: 7") || !stats.includes("With PDF: 6") || !stats.includes("DOI sources:")) {
+    if (!stats.includes("Papers: 6") || !stats.includes("With PDF: 6") || !stats.includes("Without PDF: 0") || !stats.includes("DOI sources:")) {
       throw new Error("stats output missing expected counts");
     }
     const statsJson = JSON.parse(run(["--library", library, "stats", "--json"]));
-    if (statsJson.totalPapers !== 7 || statsJson.withPdf !== 6 || !statsJson.doiSources.some(item => item.name === "pdf-metadata")) {
+    if (statsJson.totalPapers !== 6 || statsJson.withPdf !== 6 || statsJson.withoutPdf !== 0 || !statsJson.doiSources.some(item => item.name === "pdf-metadata")) {
       throw new Error("stats JSON missing expected counts");
     }
 

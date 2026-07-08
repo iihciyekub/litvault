@@ -8,13 +8,15 @@ It is implemented in Node.js, installs with npm, stores metadata in a local `man
 
 ## Install
 
-Install from GitHub:
+Install the latest GitHub release:
 
 ```bash
-npm install -g github:iihciyekub/litvault#v0.1.22
+npm install -g github:iihciyekub/litvault#semver:*
 litvault --help
 lv --help
 ```
+
+This resolves the newest semantic version tag, so the command does not need to change when a newer release is published.
 
 `lv` is a short alias for `litvault`.
 
@@ -120,12 +122,14 @@ litvault init
 litvault config set library /Volumes/REFSSD/litvault-library
 litvault add ~/Downloads/paper.pdf --doi 10.1038/s41586-020-2649-2
 litvault add ~/Downloads/papers
+litvault scan-doi ~/Downloads/papers
 litvault missing-dois --file dois.txt
 litvault search transformer
 litvault stats
 litvault info 10.1038/s41586-020-2649-2
 litvault get --file dois.txt --to ~/Desktop/refs
 litvault export-bib --out ~/Desktop/references.bib
+litvault verify
 ```
 
 ## Commands
@@ -134,7 +138,6 @@ litvault export-bib --out ~/Desktop/references.bib
 litvault [--library DIR] init [DIR]
 litvault [--library DIR] add FILE_OR_DIR... [--doi DOI] [--title TITLE] [--tag TAG] [--no-crossref] [--crossref-delay MS] [--crossref-retries N] [--no-recursive] [--quiet] [--verbose]
 litvault scan-doi FILE_OR_DIR... [--json] [--no-recursive]
-litvault [--library DIR] import-dois DOI... [--file dois.txt] [--tag TAG] [--no-crossref] [--crossref-delay MS] [--crossref-retries N]
 litvault [--library DIR] missing-dois DOI... [--file dois.txt] [--json]
 litvault [--library DIR] get QUERY... [--to DIR] [--file queries.txt] [--name "{citekey}.pdf"]
 litvault [--library DIR] info QUERY
@@ -150,6 +153,7 @@ litvault [--library DIR] repair-doi [--apply] [--json]
 litvault [--library DIR] dedupe-doi [--apply] [--json] [--keep ID --remove ID...] [--delete-extra-pdfs]
 litvault [--library DIR] dedupe [--apply] [--json]
 litvault [--library DIR] export-bib [QUERY...] [--file queries.txt] [--out FILE]
+litvault update [--check] [--dry-run] [--force] [--ref REF]
 litvault config get
 litvault config set library DIR
 litvault config unset library
@@ -271,22 +275,9 @@ litvault missing-dois 10.1038/s41586-020-2649-2 10.1145/3510003.3510101
 litvault missing-dois --file dois.txt
 ```
 
-`missing-dois` only reports DOI values. It does not create or modify records.
-
-Optional: import metadata-only records for DOI values when you do not have PDFs:
-
-```bash
-litvault import-dois 10.1038/s41586-020-2649-2 10.1145/3510003.3510101
-litvault import-dois --file dois.txt
-```
+`missing-dois` only reports DOI values. It does not create or modify records. `litvault` does not create DOI-only records because the vault is for managing PDFs.
 
 `dois.txt` can contain one DOI per line, DOI URLs, BibTeX snippets, or pasted free-form text. `litvault` extracts DOI-looking values from the file and ignores ordinary prose.
-
-For large Crossref lookups, slow down and retry transient failures:
-
-```bash
-litvault import-dois --file dois.txt --crossref-delay 1000 --crossref-retries 3
-```
 
 `missing-dois` prints one normalized missing DOI per line. Use `--json` to also see DOI values that are already present or invalid.
 
@@ -326,7 +317,7 @@ Machine-readable output:
 litvault verify --json
 ```
 
-`verify` checks that every PDF referenced by `manifest.json` exists, that stored PDFs still match their SHA256 hashes, that object PDFs are referenced by the manifest, and that DOI/duplicate problems are not present. It returns a non-zero exit code if integrity checks fail.
+`verify` checks that every PDF referenced by `manifest.json` exists, that stored PDFs still match their SHA256 hashes, that object PDFs are referenced by the manifest, that every record has a PDF, and that DOI/duplicate problems are not present. It returns a non-zero exit code if integrity checks fail.
 
 ## Backups
 
@@ -379,7 +370,7 @@ litvault doctor
 litvault doctor --json
 ```
 
-`doctor` reports duplicate PDF hash groups, duplicate DOI groups, invalid DOI values, normalizable DOI values, missing stored PDFs, records without PDFs, records without DOIs, and records missing key metadata.
+`doctor` reports duplicate PDF hash groups, duplicate DOI groups, invalid DOI values, normalizable DOI values, missing stored PDFs, legacy records without PDFs, records without DOIs, and records missing key metadata.
 
 Fill missing title, year, or author fields from DOI metadata:
 
@@ -410,7 +401,7 @@ Preview duplicate DOI cleanup:
 litvault dedupe-doi
 ```
 
-`dedupe-doi` auto-merges only duplicate DOI groups that share the same PDF hash, or where only one record has a PDF. If a duplicate DOI group has multiple different PDF hashes, it is reported as a conflict. After checking the records, resolve one conflict manually:
+`dedupe-doi` auto-merges only safe duplicate DOI groups, such as records that share the same PDF hash or legacy duplicate groups where only one record has a PDF. If a duplicate DOI group has multiple different PDF hashes, it is reported as a conflict. After checking the records, resolve one conflict manually:
 
 ```bash
 litvault dedupe-doi --keep 123 --remove 456
