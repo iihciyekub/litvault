@@ -3,13 +3,11 @@
 const crypto = require("node:crypto");
 const fs = require("node:fs");
 const fsp = require("node:fs/promises");
-const http = require("node:http");
-const https = require("node:https");
 const os = require("node:os");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 
-const VERSION = "0.1.20";
+const VERSION = "0.1.21";
 const GITHUB_REPO = "iihciyekub/litvault";
 const FALLBACK_LIBRARY = path.join("/Volumes", "REFSSD", "litvault-library");
 const DOI_SUFFIX_RE_SOURCE = String.raw`[-._;()/:,A-Z0-9+%<>=]+`;
@@ -51,7 +49,6 @@ Usage:
   litvault [--library DIR] dedupe-doi [--apply] [--json] [--keep ID --remove ID...] [--delete-extra-pdfs]
   litvault [--library DIR] dedupe [--apply] [--json]
   litvault [--library DIR] export-bib [QUERY...] [--file queries.txt] [--out FILE]
-  litvault [--library DIR] sync zotero [--dry-run] [--no-copy-pdfs]
   litvault update [--check] [--dry-run] [--force] [--ref REF]
   litvault config get
   litvault config set library DIR
@@ -64,9 +61,8 @@ Examples:
   litvault add ~/Downloads/paper.pdf --doi 10.1038/s41586-020-2649-2
   litvault add ~/Downloads/papers
   litvault scan-doi ~/Downloads/papers
-  litvault import-dois 10.1038/s41586-020-2649-2 10.1145/3510003.3510101
-  litvault import-dois --file dois.txt
   litvault missing-dois 10.1038/s41586-020-2649-2 10.1145/3510003.3510101
+  litvault missing-dois --file dois.txt
   litvault stats
   litvault verify
   litvault backup list
@@ -78,8 +74,8 @@ Examples:
   litvault dedupe --apply
   litvault get 10.1038/s41586-020-2649-2
   litvault get 10.1038/s41586-020-2649-2 10.1145/3510003.3510101 --to ~/Desktop/refs
+  litvault get --file dois.txt --to ~/Desktop/refs
   litvault export-bib 10.1038/s41586-020-2649-2 --out refs.bib
-  litvault sync zotero --dry-run
   litvault update
 `;
 }
@@ -1902,86 +1898,6 @@ function buildMissingDoiReport(db, queries) {
   };
 }
 
-function zoteroCreatorName(creator) {
-  if (creator.name) return creator.name.trim();
-  return [creator.firstName, creator.lastName].filter(Boolean).join(" ").trim();
-}
-
-function yearFromDate(value) {
-  const match = /\b(1[5-9]\d{2}|20\d{2}|21\d{2})\b/.exec(value || "");
-  return match ? Number(match[1]) : null;
-}
-
-function metadataFromZoteroItem(item, zoteroLibrary) {
-  const data = item.data || {};
-  const doi = data.DOI || data.doi || findDoiInText(data.extra || "");
-  if (!doi) return null;
-  return {
-    doi: normalizeDoi(doi),
-    title: data.title || "",
-    authors: (data.creators || []).map(zoteroCreatorName).filter(Boolean),
-    year: yearFromDate(data.date || ""),
-    venue: data.publicationTitle || data.proceedingsTitle || data.bookTitle || "",
-    publisher: data.publisher || "",
-    url: data.url || "",
-    type: data.itemType || "",
-    doiSource: "zotero",
-    zoteroKey: item.key || data.key,
-    zoteroLibrary,
-  };
-}
-
-async function fetchZoteroJson(baseUrl, zoteroLibrary, apiPath, params = {}) {
-  const url = new URL(`${baseUrl.replace(/\/$/, "")}/${zoteroLibrary.replace(/^\/|\/$/g, "")}/${apiPath.replace(/^\//, "")}`);
-  for (const [key, value] of Object.entries(params)) url.searchParams.set(key, value);
-  const response = await fetch(url, { headers: { Accept: "application/json", "User-Agent": "litvault/0.1" } });
-  if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
-  return { data: await response.json(), total: Number(response.headers.get("Total-Results") || "0") };
-}
-
-function attachmentPdfSource(attachment) {
-  const data = attachment.data || {};
-  if (data.contentType && !data.contentType.toLowerCase().includes("pdf")) return null;
-  const p = data.path || "";
-  if (p.startsWith("file://")) return decodeURIComponent(new URL(p).pathname);
-  if (p && fs.existsSync(expandHome(p))) return expandHome(p);
-  const href = attachment.links?.enclosure?.href;
-  return href || null;
-}
-
-async function downloadPdf(url) {
-  const temp = path.join(os.tmpdir(), `litvault-zotero-${process.pid}-${Date.now()}.pdf`);
-  const client = url.startsWith("https:") ? https : http;
-  await new Promise((resolve, reject) => {
-    client.get(url, response => {
-      if (response.statusCode < 200 || response.statusCode >= 300) {
-        reject(new Error(`HTTP ${response.statusCode}`));
-        return;
-      }
-      const out = fs.createWriteStream(temp);
-      response.pipe(out);
-      out.on("finish", () => out.close(resolve));
-      out.on("error", reject);
-    }).on("error", reject);
-  });
-  return temp;
-}
-
-async function findZoteroPdf(baseUrl, zoteroLibrary, itemKey) {
-  const { data: children } = await fetchZoteroJson(baseUrl, zoteroLibrary, `items/${itemKey}/children`, {
-    format: "json",
-    include: "data",
-    limit: "100",
-  });
-  for (const child of children) {
-    const source = attachmentPdfSource(child);
-    if (!source) continue;
-    if (source.startsWith("http://") || source.startsWith("https://")) return downloadPdf(source);
-    if (fs.existsSync(source)) return source;
-  }
-  return null;
-}
-
 async function main() {
   const { global, args } = parseArgs(process.argv.slice(2));
   if (args.includes("--help") || args[0] === "-h" || args.length === 0) {
@@ -2393,54 +2309,6 @@ async function main() {
       process.stdout.write(text);
     }
     return 0;
-  }
-
-  if (command === "sync" && args[0] === "zotero") {
-    args.shift();
-    const baseUrl = readOption(args, "--base-url", "http://localhost:23119/api");
-    const zoteroLibrary = readOption(args, "--zotero-library", "users/0").replace(/^\/|\/$/g, "");
-    const batchSize = Number(readOption(args, "--batch-size", "100"));
-    const tags = readRepeated(args, "--tag");
-    const dryRun = readFlag(args, "--dry-run");
-    const copyPdfs = !readFlag(args, "--no-copy-pdfs");
-    let imported = 0;
-    let skipped = 0;
-    let errors = 0;
-    console.log(`Reading Zotero library: ${baseUrl.replace(/\/$/, "")}/${zoteroLibrary}`);
-    for (let start = 0; ; start += batchSize) {
-      const { data: items, total } = await fetchZoteroJson(baseUrl, zoteroLibrary, "items/top", {
-        format: "json",
-        include: "data",
-        limit: String(batchSize),
-        start: String(start),
-      });
-      if (!items.length) break;
-      for (const item of items) {
-        const metadata = metadataFromZoteroItem(item, zoteroLibrary);
-        if (!metadata) {
-          skipped++;
-          continue;
-        }
-        let pdf = null;
-        try {
-          if (copyPdfs && metadata.zoteroKey) pdf = await findZoteroPdf(baseUrl, zoteroLibrary, metadata.zoteroKey);
-        } catch (error) {
-          errors++;
-          console.error(`Warning: could not fetch PDF for Zotero item ${metadata.zoteroKey}: ${error.message}`);
-        }
-        if (dryRun) {
-          console.log(`Would import: ${metadata.doi}  ${metadata.title}`);
-        } else {
-          const paper = await upsertPaper(library, metadata, pdf, tags.length ? tags : ["zotero"]);
-          console.log(`Imported: ${paper.citekey}  DOI: ${paper.doi}`);
-        }
-        if (pdf && pdf.startsWith(os.tmpdir())) await fsp.rm(pdf, { force: true });
-        imported++;
-      }
-      if (items.length < batchSize || (total && start + items.length >= total)) break;
-    }
-    console.log(`${dryRun ? "Would import" : "Imported"}: ${imported}; skipped without DOI: ${skipped}; PDF errors: ${errors}`);
-    return errors ? 1 : 0;
   }
 
   throw new Error(`Unknown command: ${command}`);

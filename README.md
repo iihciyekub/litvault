@@ -106,11 +106,10 @@ litvault missing-dois --file dois.txt
 
 `dois.txt` 不必严格一行一个 DOI；可以是 DOI URL、BibTeX 片段、网页上复制下来的引用文本。`litvault` 会从文件全文里提取像 DOI 的值，普通说明文字会被忽略。
 
-它默认一行输出一个未入库 DOI，适合接着导入：
+它默认一行输出一个未入库 DOI，不会写入文献库：
 
 ```bash
-litvault missing-dois --file dois.txt > missing-dois.txt
-litvault import-dois --file missing-dois.txt
+litvault missing-dois --file dois.txt
 ```
 
 ### 5. 自动去重，不重复收同一份 PDF
@@ -273,7 +272,7 @@ litvault backup prune --keep 20 --apply
 从 GitHub 安装最新版：
 
 ```bash
-npm install -g github:iihciyekub/litvault#v0.1.20
+npm install -g github:iihciyekub/litvault#v0.1.21
 ```
 
 安装后也可以用短命令 `lv`，它和 `litvault` 完全等价：

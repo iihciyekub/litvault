@@ -11,7 +11,7 @@ It is implemented in Node.js, installs with npm, stores metadata in a local `man
 Install from GitHub:
 
 ```bash
-npm install -g github:iihciyekub/litvault#v0.1.20
+npm install -g github:iihciyekub/litvault#v0.1.21
 litvault --help
 lv --help
 ```
@@ -120,11 +120,11 @@ litvault init
 litvault config set library /Volumes/REFSSD/litvault-library
 litvault add ~/Downloads/paper.pdf --doi 10.1038/s41586-020-2649-2
 litvault add ~/Downloads/papers
-litvault import-dois 10.1038/s41586-020-2649-2 10.1145/3510003.3510101
+litvault missing-dois --file dois.txt
 litvault search transformer
 litvault stats
 litvault info 10.1038/s41586-020-2649-2
-litvault get 10.1038/s41586-020-2649-2
+litvault get --file dois.txt --to ~/Desktop/refs
 litvault export-bib --out ~/Desktop/references.bib
 ```
 
@@ -150,7 +150,6 @@ litvault [--library DIR] repair-doi [--apply] [--json]
 litvault [--library DIR] dedupe-doi [--apply] [--json] [--keep ID --remove ID...] [--delete-extra-pdfs]
 litvault [--library DIR] dedupe [--apply] [--json]
 litvault [--library DIR] export-bib [QUERY...] [--file queries.txt] [--out FILE]
-litvault [--library DIR] sync zotero [--dry-run] [--no-copy-pdfs]
 litvault config get
 litvault config set library DIR
 litvault config unset library
@@ -263,28 +262,25 @@ Limitations:
 
 The default behavior is conservative: no DOI means no import.
 
-## Import DOI Lists
+## DOI List Tools
 
-Import metadata for many DOIs without PDFs:
-
-```bash
-litvault import-dois 10.1038/s41586-020-2649-2 10.1145/3510003.3510101
-```
-
-Import from a text file:
-
-```bash
-litvault import-dois --file dois.txt
-```
-
-`dois.txt` can contain one DOI per line, DOI URLs, BibTeX snippets, or pasted free-form text. `litvault` extracts DOI-looking values from the file and ignores ordinary prose.
-
-Check which DOIs are not already in the vault:
+Check which DOI values are not already in the vault:
 
 ```bash
 litvault missing-dois 10.1038/s41586-020-2649-2 10.1145/3510003.3510101
 litvault missing-dois --file dois.txt
 ```
+
+`missing-dois` only reports DOI values. It does not create or modify records.
+
+Optional: import metadata-only records for DOI values when you do not have PDFs:
+
+```bash
+litvault import-dois 10.1038/s41586-020-2649-2 10.1145/3510003.3510101
+litvault import-dois --file dois.txt
+```
+
+`dois.txt` can contain one DOI per line, DOI URLs, BibTeX snippets, or pasted free-form text. `litvault` extracts DOI-looking values from the file and ignores ordinary prose.
 
 `missing-dois` prints one normalized missing DOI per line. Use `--json` to also see DOI values that are already present or invalid.
 
@@ -501,37 +497,6 @@ Available filename fields:
 {first_author}
 {title}
 ```
-
-## Zotero Sync
-
-`litvault sync zotero` imports DOI-backed top-level Zotero items through Zotero's local API.
-
-Before syncing:
-
-1. Start Zotero.
-2. Enable local API access in Zotero settings.
-3. Run:
-
-```bash
-litvault sync zotero --dry-run
-litvault sync zotero
-```
-
-Metadata and available PDF attachments are imported into `litvault`.
-
-Skip PDF attachment copying:
-
-```bash
-litvault sync zotero --no-copy-pdfs
-```
-
-Import from another Zotero library path:
-
-```bash
-litvault sync zotero --zotero-library groups/123456
-```
-
-The current sync direction is Zotero -> litvault. Local write-back into Zotero is intentionally not included in v0.1.
 
 ## Notes
 

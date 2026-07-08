@@ -1,6 +1,6 @@
 {
   "name": "litvault",
-  "version": "0.1.20",
+  "version": "0.1.21",
   "description": "A DOI-centered local literature vault CLI.",
   "license": "MIT",
   "author": "iipro",
@@ -33,7 +33,6 @@
     "doi",
     "papers",
     "bibtex",
-    "cli",
-    "zotero"
+    "cli"
   ]
 }

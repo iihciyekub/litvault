@@ -74,12 +74,16 @@ async function main() {
     if (!defaultConfig.includes("/Volumes/REFSSD/litvault-library")) {
       throw new Error("default library should point at REFSSD");
     }
+    const help = run(["--help"], { configRoot: temp });
+    if (help.includes("sync zotero")) {
+      throw new Error("help should not advertise removed Zotero sync command");
+    }
     const packageJson = JSON.parse(await fsp.readFile(path.join(root, "package.json"), "utf8"));
     if (packageJson.bin?.lv !== "bin/litvault-node.js") {
       throw new Error("package.json should expose lv as a CLI alias");
     }
-    const updateDryRun = run(["update", "--dry-run", "--force", "--ref", "v0.1.20"], { configRoot: temp });
-    if (!updateDryRun.includes("npm install -g github:iihciyekub/litvault#v0.1.20")) {
+    const updateDryRun = run(["update", "--dry-run", "--force", "--ref", "v0.1.21"], { configRoot: temp });
+    if (!updateDryRun.includes("npm install -g github:iihciyekub/litvault#v0.1.21")) {
       throw new Error("update dry-run did not target the expected GitHub ref");
     }
 
