@@ -95,7 +95,23 @@ Candidates:
 
 这对大批量导入特别有用。先看清楚，再动手。
 
-### 4. 自动去重，不重复收同一份 PDF
+### 4. 检查哪些 DOI 还没入库
+
+如果你手上有一批 DOI，可以先过滤出还没入库的：
+
+```bash
+litvault missing-dois 10.1287/isre.2023.0332 10.1287/mksc.2022.0212
+litvault missing-dois --file dois.txt
+```
+
+它默认一行输出一个未入库 DOI，适合接着导入：
+
+```bash
+litvault missing-dois --file dois.txt > missing-dois.txt
+litvault import-dois --file missing-dois.txt
+```
+
+### 5. 自动去重，不重复收同一份 PDF
 
 `litvault` 会给 PDF 算 SHA256。
 
@@ -111,7 +127,7 @@ paper (1).pdf
 
 目录导入时，它会先建立内存索引，快速跳过已经入库的 PDF，而不是一条条慢慢查。
 
-### 5. 用 DOI 把 PDF 拿出来
+### 6. 用 DOI 把 PDF 拿出来
 
 在当前目录导出一篇：
 
@@ -234,7 +250,7 @@ litvault backup prune --keep 20 --apply
 从 GitHub 安装最新版：
 
 ```bash
-npm install -g github:iihciyekub/litvault#v0.1.17
+npm install -g github:iihciyekub/litvault#v0.1.18
 ```
 
 检查版本：

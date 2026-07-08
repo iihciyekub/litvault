@@ -137,6 +137,35 @@ async function main() {
     if (!normalizedInfo.includes('"doi": "10.9999/metadata-only"')) {
       throw new Error("DOI trailing punctuation was not normalized");
     }
+    const missingDois = run([
+      "--library",
+      library,
+      "missing-dois",
+      "10.1234/example",
+      "https://doi.org/10.4242/new-paper.",
+      "not-a-doi",
+    ]);
+    if (missingDois.trim() !== "10.4242/new-paper") {
+      throw new Error("missing-dois did not print only normalized missing DOI values");
+    }
+    const missingDoisJson = JSON.parse(run([
+      "--library",
+      library,
+      "missing-dois",
+      "--file",
+      doiFile,
+      "10.4242/new-paper",
+      "not-a-doi",
+      "--json",
+    ]));
+    if (
+      missingDoisJson.missing.length !== 1
+      || missingDoisJson.missing[0] !== "10.4242/new-paper"
+      || !missingDoisJson.present.includes("10.1234/example")
+      || !missingDoisJson.invalid.includes("not-a-doi")
+    ) {
+      throw new Error("missing-dois JSON did not report expected present/missing/invalid DOI values");
+    }
 
     const manifest = path.join(library, "manifest.json");
     const db = JSON.parse(await fsp.readFile(manifest, "utf8"));

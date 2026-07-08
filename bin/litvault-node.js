@@ -9,7 +9,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 
-const VERSION = "0.1.17";
+const VERSION = "0.1.18";
 const GITHUB_REPO = "iihciyekub/litvault";
 const FALLBACK_LIBRARY = path.join("/Volumes", "REFSSD", "litvault-library");
 const DOI_RE = /\b(10\.\d{4,9}\/[-._;()/:A-Z0-9]+)/i;
@@ -35,6 +35,7 @@ Usage:
   litvault [--library DIR] add FILE_OR_DIR... [--doi DOI] [--title TITLE] [--tag TAG] [--no-crossref] [--no-recursive] [--quiet] [--verbose]
   litvault scan-doi FILE_OR_DIR... [--json] [--no-recursive]
   litvault [--library DIR] import-dois DOI... [--file dois.txt] [--tag TAG] [--no-crossref]
+  litvault [--library DIR] missing-dois DOI... [--file dois.txt] [--json]
   litvault [--library DIR] get QUERY... [--to DIR] [--file queries.txt] [--name "{citekey}.pdf"]
   litvault [--library DIR] info QUERY
   litvault [--library DIR] search QUERY [--limit N]
@@ -62,6 +63,7 @@ Examples:
   litvault scan-doi ~/Downloads/papers
   litvault import-dois 10.1038/s41586-020-2649-2 10.1145/3510003.3510101
   litvault import-dois --file dois.txt
+  litvault missing-dois 10.1038/s41586-020-2649-2 10.1145/3510003.3510101
   litvault stats
   litvault verify
   litvault backup list
@@ -1593,6 +1595,28 @@ async function queriesFromArgsAndFile(args) {
   return uniqueValues(values);
 }
 
+function doiValuesFromQueries(queries) {
+  return uniqueValues(queries.flatMap(value => {
+    const found = findDoisInText(value);
+    return found.length ? found : [normalizeDoi(value)];
+  }));
+}
+
+function buildMissingDoiReport(db, queries) {
+  const requested = doiValuesFromQueries(queries);
+  const stored = new Set((db.papers || []).map(paper => paper.doi ? normalizeDoi(paper.doi) : null).filter(Boolean));
+  const valid = requested.filter(doi => isValidDoi(doi));
+  const invalid = requested.filter(doi => !isValidDoi(doi));
+  const missing = valid.filter(doi => !stored.has(doi));
+  const present = valid.filter(doi => stored.has(doi));
+  return {
+    requested,
+    present,
+    missing,
+    invalid,
+  };
+}
+
 function zoteroCreatorName(creator) {
   if (creator.name) return creator.name.trim();
   return [creator.firstName, creator.lastName].filter(Boolean).join(" ").trim();
@@ -1804,7 +1828,7 @@ async function main() {
     const tags = readRepeated(args, "--tag");
     const noCrossref = readFlag(args, "--no-crossref");
     const queries = await queriesFromArgsAndFile(args);
-    const dois = uniqueValues(queries.flatMap(value => findDoisInText(value).length ? findDoisInText(value) : [normalizeDoi(value)]));
+    const dois = doiValuesFromQueries(queries);
     if (!dois.length) throw new Error("Missing DOI values. Pass DOI... or --file dois.txt.");
     let imported = 0;
     let failed = 0;
@@ -1824,6 +1848,21 @@ async function main() {
     }
     console.log(`Imported DOIs: ${imported}; failed: ${failed}; Library: ${library}`);
     return failed ? 1 : 0;
+  }
+
+  if (command === "missing-dois") {
+    const json = readFlag(args, "--json");
+    const queries = await queriesFromArgsAndFile(args);
+    if (!queries.length) throw new Error("Missing DOI values. Pass DOI... or --file dois.txt.");
+    const db = await readDb(library);
+    const report = buildMissingDoiReport(db, queries);
+    if (json) {
+      console.log(JSON.stringify({ ...report, library }, null, 2));
+    } else {
+      for (const doi of report.missing) console.log(doi);
+      for (const doi of report.invalid) console.error(`Invalid DOI: ${doi}`);
+    }
+    return 0;
   }
 
   if (command === "info") {

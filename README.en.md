@@ -11,7 +11,7 @@ It is implemented in Node.js, installs with npm, stores metadata in a local `man
 Install from GitHub:
 
 ```bash
-npm install -g github:iihciyekub/litvault#v0.1.17
+npm install -g github:iihciyekub/litvault#v0.1.18
 litvault --help
 ```
 
@@ -131,6 +131,7 @@ litvault [--library DIR] init [DIR]
 litvault [--library DIR] add FILE_OR_DIR... [--doi DOI] [--title TITLE] [--tag TAG] [--no-crossref] [--no-recursive] [--quiet] [--verbose]
 litvault scan-doi FILE_OR_DIR... [--json] [--no-recursive]
 litvault [--library DIR] import-dois DOI... [--file dois.txt] [--tag TAG] [--no-crossref]
+litvault [--library DIR] missing-dois DOI... [--file dois.txt] [--json]
 litvault [--library DIR] get QUERY... [--to DIR] [--file queries.txt] [--name "{citekey}.pdf"]
 litvault [--library DIR] info QUERY
 litvault [--library DIR] search QUERY [--limit N]
@@ -271,6 +272,15 @@ litvault import-dois --file dois.txt
 ```
 
 `dois.txt` can contain one DOI per line. Empty lines and lines starting with `#` are ignored.
+
+Check which DOIs are not already in the vault:
+
+```bash
+litvault missing-dois 10.1038/s41586-020-2649-2 10.1145/3510003.3510101
+litvault missing-dois --file dois.txt
+```
+
+`missing-dois` prints one normalized missing DOI per line. Use `--json` to also see DOI values that are already present or invalid.
 
 ## Stats
 
