@@ -272,7 +272,7 @@ litvault backup prune --keep 20 --apply
 从 GitHub 安装最新版：
 
 ```bash
-npm install -g github:iihciyekub/litvault#v0.1.21
+npm install -g github:iihciyekub/litvault#v0.1.22
 ```
 
 安装后也可以用短命令 `lv`，它和 `litvault` 完全等价：
@@ -364,6 +364,12 @@ litvault scan-doi /Volumes/REFSSD/DID_2164
 
 ```bash
 litvault add /Volumes/REFSSD/DID_2164
+```
+
+如果 PDF 很多、Crossref 容易限流，可以放慢查询并自动重试：
+
+```bash
+litvault add /Volumes/REFSSD/DID_2164 --crossref-delay 1000 --crossref-retries 3
 ```
 
 如果只想快速入库，不查 Crossref 元数据：

@@ -78,12 +78,15 @@ async function main() {
     if (help.includes("sync zotero")) {
       throw new Error("help should not advertise removed Zotero sync command");
     }
+    if (!help.includes("--crossref-delay MS") || !help.includes("--crossref-retries N")) {
+      throw new Error("help should advertise Crossref delay and retry options");
+    }
     const packageJson = JSON.parse(await fsp.readFile(path.join(root, "package.json"), "utf8"));
     if (packageJson.bin?.lv !== "bin/litvault-node.js") {
       throw new Error("package.json should expose lv as a CLI alias");
     }
-    const updateDryRun = run(["update", "--dry-run", "--force", "--ref", "v0.1.21"], { configRoot: temp });
-    if (!updateDryRun.includes("npm install -g github:iihciyekub/litvault#v0.1.21")) {
+    const updateDryRun = run(["update", "--dry-run", "--force", "--ref", "v0.1.22"], { configRoot: temp });
+    if (!updateDryRun.includes("npm install -g github:iihciyekub/litvault#v0.1.22")) {
       throw new Error("update dry-run did not target the expected GitHub ref");
     }
 
@@ -103,6 +106,10 @@ async function main() {
       "--title",
       "Smoke Test Paper",
       "--no-crossref",
+      "--crossref-delay",
+      "0",
+      "--crossref-retries",
+      "0",
       "--tag",
       "smoke",
     ], { configRoot: temp });
@@ -159,7 +166,7 @@ async function main() {
     if (!verboseDuplicateAdd.includes("Skipping already stored PDF:")) {
       throw new Error("verbose duplicate import did not print per-file details");
     }
-    run(["--library", library, "import-dois", "--file", doiFile, "--no-crossref", "--tag", "doi-list"]);
+    run(["--library", library, "import-dois", "--file", doiFile, "--no-crossref", "--crossref-delay", "0", "--crossref-retries", "0", "--tag", "doi-list"]);
     const normalizedInfo = run(["--library", library, "info", "10.9999/metadata-only"]);
     if (!normalizedInfo.includes('"doi": "10.9999/metadata-only"')) {
       throw new Error("DOI trailing punctuation was not normalized");
@@ -267,7 +274,7 @@ async function main() {
     repairDb.papers.find(paper => paper.doi === "10.5678/second").doi = "https://doi.org/10.5678/second)";
     repairDb.papers.find(paper => paper.doi === "10.1234/example").authors = [];
     await fsp.writeFile(manifest, JSON.stringify(repairDb, null, 2) + "\n", "utf8");
-    const repairMetadataPreview = run(["--library", library, "repair-metadata", "--no-crossref"]);
+    const repairMetadataPreview = run(["--library", library, "repair-metadata", "--no-crossref", "--crossref-delay", "0", "--crossref-retries", "0"]);
     if (!/Records missing title\/year\/authors with DOI: [1-9]/.test(repairMetadataPreview) || !repairMetadataPreview.includes("Dry run")) {
       throw new Error("repair-metadata did not report missing metadata records");
     }

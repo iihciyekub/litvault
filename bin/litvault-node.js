@@ -7,9 +7,11 @@ const os = require("node:os");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 
-const VERSION = "0.1.21";
+const VERSION = "0.1.22";
 const GITHUB_REPO = "iihciyekub/litvault";
 const FALLBACK_LIBRARY = path.join("/Volumes", "REFSSD", "litvault-library");
+const DEFAULT_CROSSREF_DELAY_MS = 250;
+const DEFAULT_CROSSREF_RETRIES = 3;
 const DOI_SUFFIX_RE_SOURCE = String.raw`[-._;()/:,A-Z0-9+%<>=]+`;
 const DOI_RE = new RegExp(String.raw`\b(10\.\d{4,9}/${DOI_SUFFIX_RE_SOURCE})`, "i");
 const DOI_GLOBAL_RE = new RegExp(String.raw`\b(10\.\d{4,9}/${DOI_SUFFIX_RE_SOURCE})`, "gi");
@@ -31,9 +33,9 @@ function usage() {
 
 Usage:
   litvault [--library DIR] init [DIR]
-  litvault [--library DIR] add FILE_OR_DIR... [--doi DOI] [--title TITLE] [--tag TAG] [--no-crossref] [--no-recursive] [--quiet] [--verbose]
+  litvault [--library DIR] add FILE_OR_DIR... [--doi DOI] [--title TITLE] [--tag TAG] [--no-crossref] [--crossref-delay MS] [--crossref-retries N] [--no-recursive] [--quiet] [--verbose]
   litvault scan-doi FILE_OR_DIR... [--json] [--no-recursive]
-  litvault [--library DIR] import-dois DOI... [--file dois.txt] [--tag TAG] [--no-crossref]
+  litvault [--library DIR] import-dois DOI... [--file dois.txt] [--tag TAG] [--no-crossref] [--crossref-delay MS] [--crossref-retries N]
   litvault [--library DIR] missing-dois DOI... [--file dois.txt] [--json]
   litvault [--library DIR] get QUERY... [--to DIR] [--file queries.txt] [--name "{citekey}.pdf"]
   litvault [--library DIR] info QUERY
@@ -44,7 +46,7 @@ Usage:
   litvault [--library DIR] backup list [--json]
   litvault [--library DIR] backup prune [--keep N] [--apply] [--json]
   litvault [--library DIR] doctor [--json]
-  litvault [--library DIR] repair-metadata [--apply] [--json] [--no-crossref]
+  litvault [--library DIR] repair-metadata [--apply] [--json] [--no-crossref] [--crossref-delay MS] [--crossref-retries N]
   litvault [--library DIR] repair-doi [--apply] [--json]
   litvault [--library DIR] dedupe-doi [--apply] [--json] [--keep ID --remove ID...] [--delete-extra-pdfs]
   litvault [--library DIR] dedupe [--apply] [--json]
@@ -417,6 +419,10 @@ function nowIso() {
   return new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
 }
 
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
 async function fetchJson(url) {
   const response = await fetch(url, {
     headers: {
@@ -424,8 +430,54 @@ async function fetchJson(url) {
       "User-Agent": "litvault/0.1",
     },
   });
-  if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
+  if (!response.ok) {
+    const error = new Error(`${response.status} ${response.statusText}`);
+    error.status = response.status;
+    throw error;
+  }
   return response.json();
+}
+
+function crossrefRetryDelay(delayMs, attempt) {
+  if (!delayMs) return 0;
+  const factors = [1, 2, 5];
+  return delayMs * (factors[attempt - 1] || factors[factors.length - 1]);
+}
+
+function shouldRetryCrossref(error) {
+  if (error?.status === 429) return true;
+  if (error?.status >= 500) return true;
+  if (!error?.status && /fetch failed|network|timeout|terminated|socket|econnreset|etimedout/i.test(error?.message || "")) return true;
+  return false;
+}
+
+function createCrossrefClient(options = {}) {
+  const delayMs = Math.max(0, Number(options.delayMs ?? DEFAULT_CROSSREF_DELAY_MS));
+  const retries = Math.max(0, Math.floor(Number(options.retries ?? DEFAULT_CROSSREF_RETRIES)));
+  let lastRequestStartedAt = 0;
+
+  async function waitForTurn() {
+    if (!delayMs || !lastRequestStartedAt) return;
+    const elapsed = Date.now() - lastRequestStartedAt;
+    if (elapsed < delayMs) await sleep(delayMs - elapsed);
+  }
+
+  async function fetchJsonWithRetry(url, label = "Crossref") {
+    for (let attempt = 0; ; attempt++) {
+      await waitForTurn();
+      lastRequestStartedAt = Date.now();
+      try {
+        return await fetchJson(url);
+      } catch (error) {
+        if (attempt >= retries || !shouldRetryCrossref(error)) throw error;
+        const waitMs = crossrefRetryDelay(delayMs || DEFAULT_CROSSREF_DELAY_MS, attempt + 1);
+        console.error(`Warning: ${label} retry ${attempt + 1}/${retries} after ${waitMs}ms (${error.message})`);
+        if (waitMs) await sleep(waitMs);
+      }
+    }
+  }
+
+  return { delayMs, retries, fetchJson: fetchJsonWithRetry };
 }
 
 function first(values, fallback = "") {
@@ -440,9 +492,9 @@ function yearFromCrossref(message) {
   return null;
 }
 
-async function fetchCrossref(doi) {
+async function fetchCrossref(doi, crossref = createCrossrefClient()) {
   const encoded = encodeURIComponent(doi);
-  const payload = await fetchJson(`https://api.crossref.org/works/${encoded}`);
+  const payload = await crossref.fetchJson(`https://api.crossref.org/works/${encoded}`, `Crossref ${doi}`);
   const message = payload.message || {};
   return {
     doi: normalizeDoi(message.DOI || doi),
@@ -458,11 +510,11 @@ async function fetchCrossref(doi) {
   };
 }
 
-async function metadataForDoi(doi, title = "", noCrossref = false) {
+async function metadataForDoi(doi, title = "", noCrossref = false, crossref = createCrossrefClient()) {
   let metadata = { doi: normalizeDoi(doi), title, authors: [] };
   if (!noCrossref) {
     try {
-      metadata = { ...metadata, ...(await fetchCrossref(metadata.doi)) };
+      metadata = { ...metadata, ...(await fetchCrossref(metadata.doi, crossref)) };
     } catch (error) {
       console.error(`Warning: Crossref lookup failed for ${metadata.doi}: ${error.message}`);
     }
@@ -579,6 +631,7 @@ function applyMetadataToPaper(db, indexes, metadata, pdfData, tags = []) {
 async function addPdfBatch(library, files, options) {
   const db = await readDb(library);
   const indexes = buildDbIndexes(db);
+  const crossref = createCrossrefClient(options.crossref);
   const seenInputHashes = new Map();
   let imported = 0;
   let updated = 0;
@@ -660,7 +713,7 @@ async function addPdfBatch(library, files, options) {
     if (!paper || !paper.title || !paper.authors?.length || !paper.year) {
       metadata = {
         ...metadata,
-        ...(await metadataForDoi(doi, options.title || "", options.noCrossref)),
+        ...(await metadataForDoi(doi, options.title || "", options.noCrossref, crossref)),
         doiSource: metadata.doiSource,
         doiEvidence: metadata.doiEvidence,
       };
@@ -1397,12 +1450,13 @@ function metadataIssues(paper) {
 
 async function planRepairMetadata(db, options = {}) {
   const candidates = (db.papers || []).filter(paper => paper.doi && metadataIssues(paper).length);
+  const crossref = createCrossrefClient(options.crossref);
   const updates = [];
   const unchanged = [];
   const failed = [];
   for (const paper of candidates) {
     try {
-      const metadata = await metadataForDoi(paper.doi, "", options.noCrossref);
+      const metadata = await metadataForDoi(paper.doi, "", options.noCrossref, crossref);
       const fields = {};
       if (!paper.title && metadata.title) fields.title = metadata.title;
       if (!paper.year && metadata.year) fields.year = metadata.year;
@@ -1784,6 +1838,21 @@ function readRepeated(args, name) {
   return values.filter(Boolean);
 }
 
+function readNonNegativeNumberOption(args, name, fallback) {
+  const raw = readOption(args, name);
+  if (raw === null) return fallback;
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value < 0) throw new Error(`${name} must be a non-negative number.`);
+  return value;
+}
+
+function readCrossrefOptions(args) {
+  const delayMs = readNonNegativeNumberOption(args, "--crossref-delay", DEFAULT_CROSSREF_DELAY_MS);
+  const retries = readNonNegativeNumberOption(args, "--crossref-retries", DEFAULT_CROSSREF_RETRIES);
+  if (!Number.isInteger(retries)) throw new Error("--crossref-retries must be a non-negative integer.");
+  return { delayMs, retries };
+}
+
 function parseVersionTag(value) {
   const raw = String(value || "").trim();
   const match = /^v?(\d+\.\d+\.\d+)$/.exec(raw);
@@ -1970,6 +2039,7 @@ async function main() {
     const title = readOption(args, "--title", "");
     const tags = readRepeated(args, "--tag");
     const noCrossref = readFlag(args, "--no-crossref");
+    const crossref = readCrossrefOptions(args);
     const recursive = !readFlag(args, "--no-recursive");
     const quiet = readFlag(args, "--quiet");
     const verbose = readFlag(args, "--verbose");
@@ -1985,6 +2055,7 @@ async function main() {
       title,
       tags,
       noCrossref,
+      crossref,
       verbose,
       progress: !quiet && !verbose && process.stderr.isTTY,
     });
@@ -2028,6 +2099,7 @@ async function main() {
   if (command === "import-dois") {
     const tags = readRepeated(args, "--tag");
     const noCrossref = readFlag(args, "--no-crossref");
+    const crossref = createCrossrefClient(readCrossrefOptions(args));
     const queries = await queriesFromArgsAndFile(args);
     const dois = doiValuesFromQueries(queries);
     if (!dois.length) throw new Error("Missing DOI values. Pass DOI... or --file dois.txt.");
@@ -2036,7 +2108,7 @@ async function main() {
     for (const doi of dois) {
       try {
         const metadata = {
-          ...(await metadataForDoi(doi, "", noCrossref)),
+          ...(await metadataForDoi(doi, "", noCrossref, crossref)),
           doiSource: "input-list",
         };
         const paper = await upsertPaper(library, metadata, null, tags);
@@ -2213,8 +2285,9 @@ async function main() {
     const apply = readFlag(args, "--apply");
     const json = readFlag(args, "--json");
     const noCrossref = readFlag(args, "--no-crossref");
+    const crossref = readCrossrefOptions(args);
     const db = await readDb(library);
-    const plan = await planRepairMetadata(db, { noCrossref });
+    const plan = await planRepairMetadata(db, { noCrossref, crossref });
     let applied = null;
     if (apply) applied = await applyRepairMetadata(library, db, plan);
     if (json) {

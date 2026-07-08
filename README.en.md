@@ -11,7 +11,7 @@ It is implemented in Node.js, installs with npm, stores metadata in a local `man
 Install from GitHub:
 
 ```bash
-npm install -g github:iihciyekub/litvault#v0.1.21
+npm install -g github:iihciyekub/litvault#v0.1.22
 litvault --help
 lv --help
 ```
@@ -132,9 +132,9 @@ litvault export-bib --out ~/Desktop/references.bib
 
 ```bash
 litvault [--library DIR] init [DIR]
-litvault [--library DIR] add FILE_OR_DIR... [--doi DOI] [--title TITLE] [--tag TAG] [--no-crossref] [--no-recursive] [--quiet] [--verbose]
+litvault [--library DIR] add FILE_OR_DIR... [--doi DOI] [--title TITLE] [--tag TAG] [--no-crossref] [--crossref-delay MS] [--crossref-retries N] [--no-recursive] [--quiet] [--verbose]
 litvault scan-doi FILE_OR_DIR... [--json] [--no-recursive]
-litvault [--library DIR] import-dois DOI... [--file dois.txt] [--tag TAG] [--no-crossref]
+litvault [--library DIR] import-dois DOI... [--file dois.txt] [--tag TAG] [--no-crossref] [--crossref-delay MS] [--crossref-retries N]
 litvault [--library DIR] missing-dois DOI... [--file dois.txt] [--json]
 litvault [--library DIR] get QUERY... [--to DIR] [--file queries.txt] [--name "{citekey}.pdf"]
 litvault [--library DIR] info QUERY
@@ -145,7 +145,7 @@ litvault [--library DIR] verify [--fast] [--json]
 litvault [--library DIR] backup list [--json]
 litvault [--library DIR] backup prune [--keep N] [--apply] [--json]
 litvault [--library DIR] doctor [--json]
-litvault [--library DIR] repair-metadata [--apply] [--json] [--no-crossref]
+litvault [--library DIR] repair-metadata [--apply] [--json] [--no-crossref] [--crossref-delay MS] [--crossref-retries N]
 litvault [--library DIR] repair-doi [--apply] [--json]
 litvault [--library DIR] dedupe-doi [--apply] [--json] [--keep ID --remove ID...] [--delete-extra-pdfs]
 litvault [--library DIR] dedupe [--apply] [--json]
@@ -282,6 +282,12 @@ litvault import-dois --file dois.txt
 
 `dois.txt` can contain one DOI per line, DOI URLs, BibTeX snippets, or pasted free-form text. `litvault` extracts DOI-looking values from the file and ignores ordinary prose.
 
+For large Crossref lookups, slow down and retry transient failures:
+
+```bash
+litvault import-dois --file dois.txt --crossref-delay 1000 --crossref-retries 3
+```
+
 `missing-dois` prints one normalized missing DOI per line. Use `--json` to also see DOI values that are already present or invalid.
 
 ## Stats
@@ -379,7 +385,7 @@ Fill missing title, year, or author fields from DOI metadata:
 
 ```bash
 litvault repair-metadata
-litvault repair-metadata --apply
+litvault repair-metadata --apply --crossref-delay 1000 --crossref-retries 3
 ```
 
 `repair-metadata` looks up records that have a DOI but are missing title, year, or authors. It fills only missing fields and does not delete records or PDFs. Use `--json` for a full machine-readable plan.
