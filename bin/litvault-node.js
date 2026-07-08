@@ -9,7 +9,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 
-const VERSION = "0.1.19";
+const VERSION = "0.1.20";
 const GITHUB_REPO = "iihciyekub/litvault";
 const FALLBACK_LIBRARY = path.join("/Volumes", "REFSSD", "litvault-library");
 const DOI_SUFFIX_RE_SOURCE = String.raw`[-._;()/:,A-Z0-9+%<>=]+`;

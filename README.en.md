@@ -11,9 +11,12 @@ It is implemented in Node.js, installs with npm, stores metadata in a local `man
 Install from GitHub:
 
 ```bash
-npm install -g github:iihciyekub/litvault#v0.1.19
+npm install -g github:iihciyekub/litvault#v0.1.20
 litvault --help
+lv --help
 ```
+
+`lv` is a short alias for `litvault`.
 
 Update to the latest GitHub release:
 
@@ -34,6 +37,7 @@ From this project directory during local development:
 cd /Users/iipro/iiresearch/litvault
 npm install -g .
 litvault --help
+lv --help
 ```
 
 For development:
@@ -478,6 +482,8 @@ Copy from a query file:
 ```bash
 litvault get --file dois.txt --to ~/Desktop/refs
 ```
+
+The file can contain one DOI per line, DOI URLs, BibTeX snippets, or pasted free-form text. `get --file` uses the same DOI extraction as `missing-dois --file`.
 
 Use a filename pattern:
 

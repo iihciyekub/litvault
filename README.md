@@ -149,7 +149,15 @@ litvault get 10.1287/isre.2023.0332 --to ~/Desktop/refs
 litvault get 10.1287/isre.2023.0332 10.1287/mksc.2022.0212 --to ~/Desktop/refs
 ```
 
-### 6. 导出 BibTeX
+从文件批量导出：
+
+```bash
+litvault get --file dois.txt --to ~/Desktop/refs
+```
+
+`dois.txt` 可以是一行一个 DOI，也可以是 DOI URL、BibTeX 片段、网页复制出来的引用文本。`get --file` 会用和 `missing-dois --file` 一样的 DOI 提取规则。
+
+### 7. 导出 BibTeX
 
 整个库导出：
 
@@ -163,7 +171,7 @@ litvault export-bib --out references.bib
 litvault export-bib 10.1287/isre.2023.0332 --out selected.bib
 ```
 
-### 7. 随时体检文献库
+### 8. 随时体检文献库
 
 这条命令很重要：
 
@@ -265,7 +273,14 @@ litvault backup prune --keep 20 --apply
 从 GitHub 安装最新版：
 
 ```bash
-npm install -g github:iihciyekub/litvault#v0.1.19
+npm install -g github:iihciyekub/litvault#v0.1.20
+```
+
+安装后也可以用短命令 `lv`，它和 `litvault` 完全等价：
+
+```bash
+lv --help
+lv doctor
 ```
 
 检查版本：

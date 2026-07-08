@@ -31,6 +31,7 @@ async function main() {
     const library = path.join(temp, "library");
     const out = path.join(temp, "out");
     const cwdOut = path.join(temp, "cwd-out");
+    const fileGetOut = path.join(temp, "file-get-out");
     const batch = path.join(temp, "batch");
     const pdf = path.join(temp, "paper.pdf");
     const metadataPdf = path.join(temp, "metadata.pdf");
@@ -41,6 +42,7 @@ async function main() {
     const pdf2 = path.join(batch, "nested", "second.pdf");
     const doiFile = path.join(temp, "dois.txt");
     const freeTextDoiFile = path.join(temp, "free-text-dois.txt");
+    const getFreeTextFile = path.join(temp, "get-free-text-dois.txt");
     const selectedBib = path.join(temp, "selected.bib");
     await fsp.writeFile(pdf, "%PDF-1.4\nDOI 10.1234/example\n", "utf8");
     await fsp.writeFile(metadataPdf, "%PDF-1.4\n<x:xmpmeta><prism:doi>10.1357/metadata-only</prism:doi></x:xmpmeta>\n", "utf8");
@@ -60,13 +62,24 @@ async function main() {
       "This prose line should not become an invalid DOI value.",
       "",
     ].join("\n"), "utf8");
+    await fsp.writeFile(getFreeTextFile, [
+      "Copy these vault PDFs out:",
+      "- https://doi.org/10.1234/example",
+      "- DOI: 10.5678/second.",
+      "This line is just a note and should be ignored.",
+      "",
+    ].join("\n"), "utf8");
 
     const defaultConfig = run(["config", "get"], { configRoot: temp });
     if (!defaultConfig.includes("/Volumes/REFSSD/litvault-library")) {
       throw new Error("default library should point at REFSSD");
     }
-    const updateDryRun = run(["update", "--dry-run", "--force", "--ref", "v0.1.19"], { configRoot: temp });
-    if (!updateDryRun.includes("npm install -g github:iihciyekub/litvault#v0.1.19")) {
+    const packageJson = JSON.parse(await fsp.readFile(path.join(root, "package.json"), "utf8"));
+    if (packageJson.bin?.lv !== "bin/litvault-node.js") {
+      throw new Error("package.json should expose lv as a CLI alias");
+    }
+    const updateDryRun = run(["update", "--dry-run", "--force", "--ref", "v0.1.20"], { configRoot: temp });
+    if (!updateDryRun.includes("npm install -g github:iihciyekub/litvault#v0.1.20")) {
       throw new Error("update dry-run did not target the expected GitHub ref");
     }
 
@@ -342,6 +355,24 @@ async function main() {
     ]);
     if (!copiedBatch.includes("Copied PDFs: 2; failed: 0")) {
       throw new Error("batch get did not copy both PDFs");
+    }
+    const copiedFromFreeTextFile = run([
+      "--library",
+      library,
+      "get",
+      "--file",
+      getFreeTextFile,
+      "--to",
+      fileGetOut,
+      "--name",
+      "{doi}.pdf",
+    ]);
+    if (
+      !copiedFromFreeTextFile.includes("Copied PDFs: 2; failed: 0")
+      || !fs.existsSync(path.join(fileGetOut, "10.1234_example.pdf"))
+      || !fs.existsSync(path.join(fileGetOut, "10.5678_second.pdf"))
+    ) {
+      throw new Error("get --file did not extract DOI values from free-form text");
     }
 
     const bib = run(["--library", library, "export-bib"]);
