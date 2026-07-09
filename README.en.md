@@ -317,7 +317,7 @@ Machine-readable output:
 litvault verify --json
 ```
 
-`verify` checks that every PDF referenced by `manifest.json` exists, that stored PDFs still match their SHA256 hashes, that object PDFs are referenced by the manifest, that every record has a PDF, and that DOI/duplicate problems are not present. It returns a non-zero exit code if integrity checks fail.
+`verify` checks that every PDF referenced by `manifest.json` exists, that stored PDFs still match their SHA256 hashes, that stored PDFs have a `%PDF-` header and `%%EOF` marker, that object PDFs are referenced by the manifest, that every record has a PDF, and that DOI/duplicate problems are not present. It returns a non-zero exit code if integrity checks fail.
 
 ## Backups
 
@@ -370,7 +370,21 @@ litvault doctor
 litvault doctor --json
 ```
 
-`doctor` reports duplicate PDF hash groups, duplicate DOI groups, invalid DOI values, normalizable DOI values, missing stored PDFs, legacy records without PDFs, records without DOIs, and records missing key metadata.
+`doctor` reports duplicate PDF hash groups, duplicate DOI groups, invalid DOI values, normalizable DOI values, missing stored PDFs, invalid stored PDFs, legacy records without PDFs, records without DOIs, and records missing key metadata.
+
+If `verify` or `doctor` reports `invalid pdf header: b'<!DOC'` or `EOF marker not found`, a `.pdf` file is usually an HTML error/login page or a truncated download. Preview removal of invalid PDF records:
+
+```bash
+litvault prune-invalid-pdfs
+```
+
+Apply after checking the preview:
+
+```bash
+litvault prune-invalid-pdfs --apply
+```
+
+Applying creates a `manifest.json` backup, removes invalid PDF records, and deletes invalid PDF objects that are no longer referenced by any remaining record.
 
 Fill missing title, year, or author fields from DOI metadata:
 
