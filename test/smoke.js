@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+const crypto = require("node:crypto");
 const fs = require("node:fs");
 const fsp = require("node:fs/promises");
 const os = require("node:os");
@@ -8,6 +9,10 @@ const { spawnSync } = require("node:child_process");
 
 const root = path.resolve(__dirname, "..");
 const cli = path.join(root, "bin", "litvault-node.js");
+
+function pdfText(text) {
+  return `%PDF-1.4\n${text}\n%%EOF\n`;
+}
 
 function run(args, options = {}) {
   const { configRoot, ...spawnOptions } = options;
@@ -39,19 +44,21 @@ async function main() {
     const sanitizedFilenamePdf = path.join(temp, "10_1002_smj_3512.pdf");
     const noisyMetadataFilenamePdf = path.join(temp, "10_25300_misq_2024_18340.pdf");
     const conflictPdf = path.join(temp, "10.1111_filename-conflict.pdf");
+    const invalidPdf = path.join(temp, "10.4242_invalid-html.pdf");
     const pdf2 = path.join(batch, "nested", "second.pdf");
     const doiFile = path.join(temp, "dois.txt");
     const freeTextDoiFile = path.join(temp, "free-text-dois.txt");
     const getFreeTextFile = path.join(temp, "get-free-text-dois.txt");
     const selectedBib = path.join(temp, "selected.bib");
-    await fsp.writeFile(pdf, "%PDF-1.4\nDOI 10.1234/example\n", "utf8");
-    await fsp.writeFile(metadataPdf, "%PDF-1.4\n<x:xmpmeta><prism:doi>10.1357/metadata-only</prism:doi></x:xmpmeta>\n", "utf8");
-    await fsp.writeFile(filenameDoiPdf, "%PDF-1.4\nNo extractable DOI in this PDF body.\n", "utf8");
-    await fsp.writeFile(sanitizedFilenamePdf, "%PDF-1.4\n<x:xmpmeta><prism:doi>10.1002/smj.3512</prism:doi></x:xmpmeta>\n", "utf8");
-    await fsp.writeFile(noisyMetadataFilenamePdf, "%PDF-1.4\n/URI(https://doi.org/10.1017/S0022109021000430)\n/URI(https://doi.org/10.1287/mnsc.2022.4436)\n", "utf8");
-    await fsp.writeFile(conflictPdf, "%PDF-1.4\n<x:xmpmeta><prism:doi>10.2222/metadata-conflict</prism:doi></x:xmpmeta>\n", "utf8");
+    await fsp.writeFile(pdf, pdfText("DOI 10.1234/example"), "utf8");
+    await fsp.writeFile(metadataPdf, pdfText("<x:xmpmeta><prism:doi>10.1357/metadata-only</prism:doi></x:xmpmeta>"), "utf8");
+    await fsp.writeFile(filenameDoiPdf, pdfText("No extractable DOI in this PDF body."), "utf8");
+    await fsp.writeFile(sanitizedFilenamePdf, pdfText("<x:xmpmeta><prism:doi>10.1002/smj.3512</prism:doi></x:xmpmeta>"), "utf8");
+    await fsp.writeFile(noisyMetadataFilenamePdf, pdfText("/URI(https://doi.org/10.1017/S0022109021000430)\n/URI(https://doi.org/10.1287/mnsc.2022.4436)"), "utf8");
+    await fsp.writeFile(conflictPdf, pdfText("<x:xmpmeta><prism:doi>10.2222/metadata-conflict</prism:doi></x:xmpmeta>"), "utf8");
+    await fsp.writeFile(invalidPdf, "<!DOCTYPE html><title>Login required</title>10.4242/invalid-html\n", "utf8");
     await fsp.mkdir(path.dirname(pdf2), { recursive: true });
-    await fsp.writeFile(pdf2, "%PDF-1.4\nDOI 10.5678/second\n", "utf8");
+    await fsp.writeFile(pdf2, pdfText("DOI 10.5678/second"), "utf8");
     await fsp.writeFile(doiFile, "10.1234/example\n10.9999/metadata-only)\n", "utf8");
     await fsp.writeFile(freeTextDoiFile, [
       "These citations were pasted from a browser and BibTeX export.",
@@ -100,6 +107,30 @@ async function main() {
     run(["init"], { configRoot: temp });
     if (fs.existsSync(path.join(library, "exports")) || fs.existsSync(path.join(library, "notes"))) {
       throw new Error("init should not create unused exports or notes directories");
+    }
+    const invalidAdd = spawnSync(process.execPath, [
+      cli,
+      "add",
+      invalidPdf,
+      "--doi",
+      "10.4242/invalid-html",
+      "--no-crossref",
+      "--verbose",
+    ], {
+      cwd: root,
+      encoding: "utf8",
+      env: { ...process.env, XDG_CONFIG_HOME: path.join(temp, "xdg") },
+    });
+    if (invalidAdd.status === 0 || !invalidAdd.stdout.includes("skipped invalid PDFs: 1") || !invalidAdd.stdout.includes("invalid pdf header: b'<!DOC'")) {
+      throw new Error(`invalid PDF add was not rejected cleanly\nSTDOUT:\n${invalidAdd.stdout}\nSTDERR:\n${invalidAdd.stderr}`);
+    }
+    const invalidScan = spawnSync(process.execPath, [cli, "scan-doi", invalidPdf], {
+      cwd: root,
+      encoding: "utf8",
+      env: { ...process.env, XDG_CONFIG_HOME: path.join(temp, "xdg") },
+    });
+    if (invalidScan.status === 0 || !invalidScan.stdout.includes("Status: invalid-pdf") || !invalidScan.stdout.includes("invalid pdf header: b'<!DOC'")) {
+      throw new Error(`invalid PDF scan did not report invalid-pdf\nSTDOUT:\n${invalidScan.stdout}\nSTDERR:\n${invalidScan.stderr}`);
     }
     run([
       "add",
@@ -318,6 +349,46 @@ async function main() {
     }
     legacyDb.papers = legacyDb.papers.filter(paper => paper.citekey !== "legacywithoutpdf");
     await fsp.writeFile(manifest, JSON.stringify(legacyDb, null, 2) + "\n", "utf8");
+
+    const invalidStoredBytes = Buffer.from("<!DOCTYPE html><title>Publisher error page</title>\n", "utf8");
+    const invalidStoredSha = crypto.createHash("sha256").update(invalidStoredBytes).digest("hex");
+    const invalidStoredRel = path.join("objects", "sha256", invalidStoredSha.slice(0, 2), invalidStoredSha.slice(2, 4), `${invalidStoredSha}.pdf`);
+    await fsp.mkdir(path.dirname(path.join(library, invalidStoredRel)), { recursive: true });
+    await fsp.writeFile(path.join(library, invalidStoredRel), invalidStoredBytes);
+    const invalidStoredDb = JSON.parse(await fsp.readFile(manifest, "utf8"));
+    invalidStoredDb.papers.push({
+      id: invalidStoredDb.nextId++,
+      doi: "10.4242/invalid-stored",
+      citekey: "invalidstored",
+      title: "Invalid stored PDF",
+      authors: [],
+      year: null,
+      pdfSha256: invalidStoredSha,
+      pdfPath: invalidStoredRel,
+      addedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
+    await fsp.writeFile(manifest, JSON.stringify(invalidStoredDb, null, 2) + "\n", "utf8");
+    const invalidVerify = spawnSync(process.execPath, [cli, "--library", library, "verify"], {
+      cwd: root,
+      encoding: "utf8",
+      env: { ...process.env, XDG_CONFIG_HOME: path.join(temp, "xdg") },
+    });
+    if (invalidVerify.status === 0 || !invalidVerify.stdout.includes("Invalid referenced PDFs: 1") || !invalidVerify.stdout.includes("invalid pdf header: b'<!DOC'")) {
+      throw new Error(`verify should fail for invalid stored PDFs\nSTDOUT:\n${invalidVerify.stdout}\nSTDERR:\n${invalidVerify.stderr}`);
+    }
+    const invalidDoctor = run(["--library", library, "doctor"]);
+    if (!invalidDoctor.includes("Invalid stored PDFs: 1") || !invalidDoctor.includes("Invalid PDF preview:")) {
+      throw new Error("doctor did not report invalid stored PDF");
+    }
+    const pruneInvalidPreview = run(["--library", library, "prune-invalid-pdfs"]);
+    if (!pruneInvalidPreview.includes("Invalid PDF records: 1") || !pruneInvalidPreview.includes("Records that would be removed: 1")) {
+      throw new Error("prune-invalid-pdfs dry-run did not plan invalid record removal");
+    }
+    const pruneInvalidApply = run(["--library", library, "prune-invalid-pdfs", "--apply"]);
+    if (!pruneInvalidApply.includes("Applied: removed 1 records; deleted PDFs 1") || fs.existsSync(path.join(library, invalidStoredRel))) {
+      throw new Error("prune-invalid-pdfs apply did not remove invalid record and object");
+    }
 
     await fsp.writeFile(path.join(library, "manifest.backup-2000-01-01T00-00-00-000Z.json"), "{}\n", "utf8");
     await fsp.writeFile(path.join(library, "manifest.backup-2000-01-02T00-00-00-000Z.json"), "{}\n", "utf8");

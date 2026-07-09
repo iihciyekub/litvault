@@ -506,6 +506,7 @@ litvault verify --json
 
 ```text
 manifest.json 里引用的 PDF 是否真的存在
+PDF 是否真的有 `%PDF-` 文件头和 `%%EOF` 结束标记
 PDF 内容 SHA256 是否还匹配
 有没有孤儿 PDF
 有没有重复 DOI
@@ -532,6 +533,20 @@ litvault verify
 litvault doctor
 litvault doctor --json
 ```
+
+如果 `verify` 或 `doctor` 报告 `invalid pdf header: b'<!DOC'` 或 `EOF marker not found`，通常表示某个 `.pdf` 实际是 HTML 错误页、登录页，或下载中断的截断文件。先预览要剔除的坏 PDF 记录：
+
+```bash
+litvault prune-invalid-pdfs
+```
+
+确认预览后再应用：
+
+```bash
+litvault prune-invalid-pdfs --apply
+```
+
+应用时会先备份 `manifest.json`，再删除坏记录，并删除不再被任何记录引用的坏 PDF 对象。
 
 补全缺失的标题、年份、作者：
 

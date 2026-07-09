@@ -7,7 +7,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 
-const VERSION = "0.1.23";
+const VERSION = "0.1.24";
 const GITHUB_REPO = "iihciyekub/litvault";
 const FALLBACK_LIBRARY = path.join("/Volumes", "REFSSD", "litvault-library");
 const DEFAULT_CROSSREF_DELAY_MS = 250;
@@ -44,6 +44,7 @@ Usage:
   litvault [--library DIR] backup list [--json]
   litvault [--library DIR] backup prune [--keep N] [--apply] [--json]
   litvault [--library DIR] doctor [--json]
+  litvault [--library DIR] prune-invalid-pdfs [--apply] [--json]
   litvault [--library DIR] repair-metadata [--apply] [--json] [--no-crossref] [--crossref-delay MS] [--crossref-retries N]
   litvault [--library DIR] repair-doi [--apply] [--json]
   litvault [--library DIR] dedupe-doi [--apply] [--json] [--keep ID --remove ID...] [--delete-extra-pdfs]
@@ -68,6 +69,7 @@ Examples:
   litvault backup list
   litvault backup prune --keep 20
   litvault doctor
+  litvault prune-invalid-pdfs
   litvault repair-metadata --apply
   litvault repair-doi --apply
   litvault dedupe-doi
@@ -206,6 +208,56 @@ function findContentDoisInText(text) {
   return findDoisInText(text).map(doi => ({ doi, source: "pdf-content", detail: "" }));
 }
 
+function bytesLiteral(buffer) {
+  let text = "b'";
+  for (const byte of buffer) {
+    if (byte === 0x5c) text += "\\\\";
+    else if (byte === 0x27) text += "\\'";
+    else if (byte === 0x0a) text += "\\n";
+    else if (byte === 0x0d) text += "\\r";
+    else if (byte === 0x09) text += "\\t";
+    else if (byte >= 0x20 && byte <= 0x7e) text += String.fromCharCode(byte);
+    else text += `\\x${byte.toString(16).padStart(2, "0")}`;
+  }
+  return `${text}'`;
+}
+
+async function inspectPdfFile(file) {
+  const fd = await fsp.open(file, "r");
+  try {
+    const stat = await fd.stat();
+    const headLength = Math.min(1024, stat.size);
+    const tailLength = Math.min(65536, stat.size);
+    const head = Buffer.alloc(headLength);
+    const tail = Buffer.alloc(tailLength);
+    if (headLength) await fd.read(head, 0, headLength, 0);
+    if (tailLength) await fd.read(tail, 0, tailLength, stat.size - tailLength);
+
+    const headText = head.toString("latin1");
+    const tailText = tail.toString("latin1");
+    const headerOffset = headText.indexOf("%PDF-");
+    const hasPdfHeader = headerOffset !== -1;
+    const hasEofMarker = tailText.includes("%%EOF");
+    const issues = [];
+    if (!hasPdfHeader) issues.push(`invalid pdf header: ${bytesLiteral(head.slice(0, 5))}`);
+    if (!hasEofMarker) issues.push("EOF marker not found");
+
+    return {
+      ok: issues.length === 0,
+      file,
+      bytes: stat.size,
+      headerPreview: bytesLiteral(head.slice(0, 5)),
+      hasPdfHeader,
+      headerOffset: hasPdfHeader ? headerOffset : null,
+      hasEofMarker,
+      reason: issues[0] || null,
+      issues,
+    };
+  } finally {
+    await fd.close();
+  }
+}
+
 function scanPdfVisibleTextDoiCandidates(file) {
   const result = spawnSync("pdftotext", ["-f", "1", "-l", "3", file, "-"], {
     encoding: "utf8",
@@ -271,6 +323,18 @@ function sourceForDoi(candidates, doi, preferredSources = []) {
 }
 
 async function extractDoiEvidence(file, explicitDoi = null) {
+  const pdfInspection = await inspectPdfFile(file);
+  if (!pdfInspection.ok) {
+    return {
+      status: "invalid-pdf",
+      doi: null,
+      source: null,
+      candidates: [],
+      reason: pdfInspection.reason,
+      pdfInspection,
+    };
+  }
+
   const candidates = [];
   if (explicitDoi) {
     const doi = normalizeDoi(explicitDoi);
@@ -596,19 +660,29 @@ async function addPdfBatch(library, files, options) {
   let skippedExistingPdf = 0;
   let skippedDuplicateInput = 0;
   let skippedDoiConflict = 0;
+  let skippedInvalidPdf = 0;
   let explicitDoi = 0;
   let metadataDoi = 0;
   let contentDoi = 0;
   let filenameDoiFallback = 0;
   let processed = 0;
   const progress = makeProgress(files.length, options.progress);
-  const state = () => ({ processed, imported, updated, skippedNoDoi, skippedExistingPdf, skippedDuplicateInput, skippedDoiConflict, filenameDoiFallback });
+  const state = () => ({ processed, imported, updated, skippedNoDoi, skippedExistingPdf, skippedDuplicateInput, skippedDoiConflict, skippedInvalidPdf, filenameDoiFallback });
   const log = message => {
     if (options.verbose) console.log(message);
   };
   progress.render(state());
 
   for (const file of files) {
+    const pdfInspection = await inspectPdfFile(file);
+    if (!pdfInspection.ok) {
+      skippedInvalidPdf++;
+      processed++;
+      log(`Skipping invalid PDF: ${file}  ${pdfInspection.reason}`);
+      progress.render(state());
+      continue;
+    }
+
     const digest = await sha256File(file);
     if (seenInputHashes.has(digest)) {
       skippedDuplicateInput++;
@@ -697,6 +771,7 @@ async function addPdfBatch(library, files, options) {
     skippedExistingPdf,
     skippedDuplicateInput,
     skippedDoiConflict,
+    skippedInvalidPdf,
     explicitDoi,
     metadataDoi,
     contentDoi,
@@ -807,7 +882,7 @@ function makeProgress(total, enabled) {
     const done = state.processed || 0;
     const width = 24;
     const filled = total ? Math.floor((done / total) * width) : 0;
-    const skipped = (state.skippedExistingPdf || 0) + (state.skippedDuplicateInput || 0) + (state.skippedNoDoi || 0) + (state.skippedDoiConflict || 0);
+    const skipped = (state.skippedExistingPdf || 0) + (state.skippedDuplicateInput || 0) + (state.skippedNoDoi || 0) + (state.skippedDoiConflict || 0) + (state.skippedInvalidPdf || 0);
     const bar = `${"#".repeat(filled)}${"-".repeat(width - filled)}`;
     const text = `Scanning PDFs [${bar}] ${done}/${total} imported:${state.imported || 0} updated:${state.updated || 0} skipped:${skipped}`;
     process.stderr.write(`\r${text.padEnd(lastLength, " ")}`);
@@ -1007,6 +1082,7 @@ async function verifyLibrary(library, db, options = {}) {
   const referencedPaths = new Set();
   const missingPdfRecords = [];
   const hashMismatches = [];
+  const invalidPdfRecords = [];
   const verifiedPdfRecords = [];
 
   for (const paper of papers) {
@@ -1016,6 +1092,15 @@ async function verifyLibrary(library, db, options = {}) {
     if (!fs.existsSync(absolute)) {
       missingPdfRecords.push(paperBrief(paper));
       continue;
+    }
+    const pdfInspection = await inspectPdfFile(absolute);
+    if (!pdfInspection.ok) {
+      invalidPdfRecords.push({
+        record: paperBrief(paper),
+        reason: pdfInspection.reason,
+        issues: pdfInspection.issues,
+        headerPreview: pdfInspection.headerPreview,
+      });
     }
     if (!options.fast && paper.pdfSha256) {
       const actual = await sha256File(absolute);
@@ -1037,6 +1122,18 @@ async function verifyLibrary(library, db, options = {}) {
     .map(file => path.relative(library, file))
     .filter(rel => !referencedPaths.has(path.normalize(rel)))
     .sort();
+  const invalidObjectPdfs = [];
+  for (const rel of orphanObjects) {
+    const pdfInspection = await inspectPdfFile(path.join(library, rel));
+    if (!pdfInspection.ok) {
+      invalidObjectPdfs.push({
+        path: rel,
+        reason: pdfInspection.reason,
+        issues: pdfInspection.issues,
+        headerPreview: pdfInspection.headerPreview,
+      });
+    }
+  }
   const doiRepairPlan = planRepairDoi(db);
   const duplicatePdfHashGroups = duplicatePdfGroups(db);
   const duplicateDoiGroups = duplicateGroupsBy(papers, paper => paper.doi ? normalizeDoi(paper.doi) : null);
@@ -1044,6 +1141,8 @@ async function verifyLibrary(library, db, options = {}) {
 
   const ok = missingPdfRecords.length === 0
     && hashMismatches.length === 0
+    && invalidPdfRecords.length === 0
+    && invalidObjectPdfs.length === 0
     && orphanObjects.length === 0
     && doiRepairPlan.normalize.length === 0
     && doiRepairPlan.clear.length === 0
@@ -1061,6 +1160,8 @@ async function verifyLibrary(library, db, options = {}) {
     checkedHashes: options.fast ? 0 : verifiedPdfRecords.length + hashMismatches.length,
     missingPdfRecords,
     hashMismatches,
+    invalidPdfRecords,
+    invalidObjectPdfs,
     orphanObjects,
     objectFiles: objectFiles.length,
     duplicatePdfHashGroups: duplicatePdfHashGroups.length,
@@ -1082,6 +1183,8 @@ function printVerifyReport(report) {
   console.log("");
   console.log(`Missing referenced PDFs: ${report.missingPdfRecords.length}`);
   console.log(`Hash mismatches: ${report.hashMismatches.length}`);
+  console.log(`Invalid referenced PDFs: ${report.invalidPdfRecords.length}`);
+  console.log(`Invalid orphan PDFs: ${report.invalidObjectPdfs.length}`);
   console.log(`Orphan object PDFs: ${report.orphanObjects.length}`);
   console.log(`Duplicate PDF hash groups: ${report.duplicatePdfHashGroups}`);
   console.log(`Duplicate DOI groups: ${report.duplicateDoiGroups}`);
@@ -1108,6 +1211,18 @@ function printVerifyReport(report) {
     for (const item of report.hashMismatches.slice(0, 10)) {
       console.log(`  #${item.record.id} expected ${item.expected.slice(0, 12)}... actual ${item.actual.slice(0, 12)}...`);
     }
+  }
+  if (report.invalidPdfRecords.length) {
+    console.log("");
+    console.log("Invalid PDF preview:");
+    for (const item of report.invalidPdfRecords.slice(0, 10)) {
+      console.log(`  #${item.record.id} ${item.record.doi || "-"} ${item.record.pdfPath || "-"}  ${item.issues.join("; ")}`);
+    }
+  }
+  if (report.invalidObjectPdfs.length) {
+    console.log("");
+    console.log("Invalid orphan PDF preview:");
+    for (const item of report.invalidObjectPdfs.slice(0, 10)) console.log(`  ${item.path}  ${item.issues.join("; ")}`);
   }
   if (report.orphanObjects.length) {
     console.log("");
@@ -1311,7 +1426,7 @@ function printRepairDoiPlan(plan, applied = null) {
   }
 }
 
-function buildDoctorReport(library, db) {
+async function buildDoctorReport(library, db) {
   const papers = db.papers || [];
   const duplicatePdfHashGroups = duplicatePdfGroups(db);
   const duplicateDoiGroups = duplicateGroupsBy(papers, paper => paper.doi ? normalizeDoi(paper.doi) : null)
@@ -1322,6 +1437,21 @@ function buildDoctorReport(library, db) {
   const missingPdfRecords = papers
     .filter(paper => paper.pdfPath && !fs.existsSync(path.join(library, paper.pdfPath)))
     .map(paperBrief);
+  const invalidPdfRecords = [];
+  for (const paper of papers) {
+    if (!paper.pdfPath) continue;
+    const absolute = path.join(library, paper.pdfPath);
+    if (!fs.existsSync(absolute)) continue;
+    const pdfInspection = await inspectPdfFile(absolute);
+    if (!pdfInspection.ok) {
+      invalidPdfRecords.push({
+        record: paperBrief(paper),
+        reason: pdfInspection.reason,
+        issues: pdfInspection.issues,
+        headerPreview: pdfInspection.headerPreview,
+      });
+    }
+  }
   const recordsWithoutPdf = papers.filter(paper => !paper.pdfPath).map(paperBrief);
   const recordsWithoutDoi = papers.filter(paper => !paper.doi).map(paperBrief);
   const doiRepairPlan = planRepairDoi(db);
@@ -1337,6 +1467,7 @@ function buildDoctorReport(library, db) {
     conflictDuplicatePdfHashGroups: duplicatePdfHashGroups.filter(group => !group.safeToMerge),
     duplicateDoiGroups,
     missingPdfRecords,
+    invalidPdfRecords,
     recordsWithoutPdf,
     recordsWithoutDoi,
     normalizableDoiRecords: doiRepairPlan.normalize,
@@ -1354,6 +1485,7 @@ function printDoctorReport(report) {
   console.log(`  Conflicts: ${report.conflictDuplicatePdfHashGroups.length}`);
   console.log(`Duplicate DOI groups: ${report.duplicateDoiGroups.length}`);
   console.log(`Missing stored PDFs: ${report.missingPdfRecords.length}`);
+  console.log(`Invalid stored PDFs: ${report.invalidPdfRecords.length}`);
   console.log(`Records without PDF: ${report.recordsWithoutPdf.length}`);
   console.log(`Records without DOI: ${report.recordsWithoutDoi.length}`);
   console.log(`Normalizable DOI values: ${report.normalizableDoiRecords.length}`);
@@ -1392,6 +1524,18 @@ function printDoctorReport(report) {
   }
 
   const previewMissing = report.recordsMissingMetadata.slice(0, 10);
+  const previewInvalidPdfs = report.invalidPdfRecords.slice(0, 10);
+  if (previewInvalidPdfs.length) {
+    console.log("");
+    console.log("Invalid PDF preview:");
+    for (const item of previewInvalidPdfs) {
+      console.log(`  #${item.record.id} ${item.record.doi || "-"} ${item.record.pdfPath || "-"}  ${item.issues.join("; ")}`);
+    }
+    if (report.invalidPdfRecords.length > previewInvalidPdfs.length) {
+      console.log(`  ... ${report.invalidPdfRecords.length - previewInvalidPdfs.length} more records`);
+    }
+  }
+
   if (previewMissing.length) {
     console.log("");
     console.log("Missing metadata preview:");
@@ -1405,6 +1549,122 @@ function printDoctorReport(report) {
     if (report.recordsMissingMetadata.length > previewMissing.length) {
       console.log(`  ... ${report.recordsMissingMetadata.length - previewMissing.length} more records`);
     }
+  }
+}
+
+async function buildInvalidPdfPrunePlan(library, db) {
+  const papers = db.papers || [];
+  const invalidRecords = [];
+  const referencedPaths = new Set();
+
+  for (const paper of papers) {
+    if (!paper.pdfPath) continue;
+    referencedPaths.add(path.normalize(paper.pdfPath));
+    const absolute = path.join(library, paper.pdfPath);
+    if (!fs.existsSync(absolute)) continue;
+    const pdfInspection = await inspectPdfFile(absolute);
+    if (!pdfInspection.ok) {
+      invalidRecords.push({
+        record: paperBrief(paper),
+        reason: pdfInspection.reason,
+        issues: pdfInspection.issues,
+        headerPreview: pdfInspection.headerPreview,
+      });
+    }
+  }
+
+  const objectsRoot = path.join(library, "objects");
+  const objectFiles = await collectFiles(objectsRoot, file => file.toLowerCase().endsWith(".pdf"));
+  const invalidOrphanObjects = [];
+  for (const file of objectFiles) {
+    const rel = path.relative(library, file);
+    if (referencedPaths.has(path.normalize(rel))) continue;
+    const pdfInspection = await inspectPdfFile(file);
+    if (!pdfInspection.ok) {
+      invalidOrphanObjects.push({
+        path: rel,
+        reason: pdfInspection.reason,
+        issues: pdfInspection.issues,
+        headerPreview: pdfInspection.headerPreview,
+      });
+    }
+  }
+
+  const removeIds = new Set(invalidRecords.map(item => item.record.id));
+  const remainingPdfPaths = new Set(papers
+    .filter(paper => !removeIds.has(paper.id))
+    .map(paper => paper.pdfPath)
+    .filter(Boolean)
+    .map(pdfPath => path.normalize(pdfPath)));
+  const deletePdfPaths = uniqueValues([
+    ...invalidRecords
+      .map(item => item.record.pdfPath)
+      .filter(Boolean)
+      .filter(pdfPath => !remainingPdfPaths.has(path.normalize(pdfPath))),
+    ...invalidOrphanObjects.map(item => item.path),
+  ]).sort();
+
+  return {
+    library,
+    invalidRecords,
+    invalidOrphanObjects,
+    removeRecordIds: Array.from(removeIds).sort((a, b) => a - b),
+    deletePdfPaths,
+  };
+}
+
+async function applyInvalidPdfPrune(library, db, plan) {
+  const removeIds = new Set(plan.removeRecordIds);
+  const before = (db.papers || []).length;
+  db.papers = (db.papers || []).filter(paper => !removeIds.has(paper.id));
+  const removedRecords = before - db.papers.length;
+  const backup = removedRecords ? await backupManifest(library) : null;
+  if (removedRecords) await writeDb(library, db);
+
+  const deletedPdfPaths = [];
+  for (const pdfPath of plan.deletePdfPaths) {
+    const absolute = path.join(library, pdfPath);
+    if (!fs.existsSync(absolute)) continue;
+    await fsp.unlink(absolute);
+    deletedPdfPaths.push(pdfPath);
+  }
+
+  return { backup, removedRecords, deletedPdfPaths };
+}
+
+function printInvalidPdfPrunePlan(plan, applied = null) {
+  console.log(`Invalid PDF records: ${plan.invalidRecords.length}`);
+  console.log(`Invalid orphan PDFs: ${plan.invalidOrphanObjects.length}`);
+  console.log(`Records that would be removed: ${plan.removeRecordIds.length}`);
+  console.log(`PDF objects that would be deleted: ${plan.deletePdfPaths.length}`);
+  if (applied) {
+    console.log(`Applied: removed ${applied.removedRecords} records; deleted PDFs ${applied.deletedPdfPaths.length}`);
+    if (applied.backup) console.log(`Backup: ${applied.backup}`);
+  } else {
+    console.log("Dry run: no changes written. Use --apply to remove invalid PDF records and delete unreferenced invalid PDF objects.");
+  }
+
+  if (plan.invalidRecords.length) {
+    console.log("");
+    console.log("Invalid record preview:");
+    for (const item of plan.invalidRecords.slice(0, 10)) {
+      console.log(`  #${item.record.id} ${item.record.doi || "-"} ${item.record.pdfPath || "-"}  ${item.issues.join("; ")}`);
+    }
+    if (plan.invalidRecords.length > 10) console.log(`  ... ${plan.invalidRecords.length - 10} more records`);
+  }
+
+  if (plan.invalidOrphanObjects.length) {
+    console.log("");
+    console.log("Invalid orphan preview:");
+    for (const item of plan.invalidOrphanObjects.slice(0, 10)) console.log(`  ${item.path}  ${item.issues.join("; ")}`);
+    if (plan.invalidOrphanObjects.length > 10) console.log(`  ... ${plan.invalidOrphanObjects.length - 10} more PDFs`);
+  }
+
+  if (plan.deletePdfPaths.length) {
+    console.log("");
+    console.log("Delete PDF preview:");
+    for (const pdfPath of plan.deletePdfPaths.slice(0, 10)) console.log(`  ${pdfPath}`);
+    if (plan.deletePdfPaths.length > 10) console.log(`  ... ${plan.deletePdfPaths.length - 10} more PDFs`);
   }
 }
 
@@ -2030,11 +2290,11 @@ async function main() {
     console.log(
       `Imported PDFs: ${result.imported}; updated existing records: ${result.updated}; ` +
       `skipped existing PDFs: ${result.skippedExistingPdf}; skipped duplicate input PDFs: ${result.skippedDuplicateInput}; ` +
-      `skipped DOI conflicts: ${result.skippedDoiConflict}; skipped without DOI: ${result.skippedNoDoi}; ` +
+      `skipped invalid PDFs: ${result.skippedInvalidPdf}; skipped DOI conflicts: ${result.skippedDoiConflict}; skipped without DOI: ${result.skippedNoDoi}; ` +
       `DOI sources: explicit ${result.explicitDoi}, metadata ${result.metadataDoi}, content ${result.contentDoi}, filename ${result.filenameDoiFallback}; ` +
       `Library: ${result.library}`
     );
-    return result.skippedNoDoi || result.skippedDoiConflict ? 1 : 0;
+    return result.skippedInvalidPdf || result.skippedNoDoi || result.skippedDoiConflict ? 1 : 0;
   }
 
   if (command === "scan-doi") {
@@ -2213,11 +2473,26 @@ async function main() {
   if (command === "doctor") {
     const json = readFlag(args, "--json");
     const db = await readDb(library);
-    const report = buildDoctorReport(library, db);
+    const report = await buildDoctorReport(library, db);
     if (json) {
       console.log(JSON.stringify(report, null, 2));
     } else {
       printDoctorReport(report);
+    }
+    return 0;
+  }
+
+  if (command === "prune-invalid-pdfs") {
+    const apply = readFlag(args, "--apply");
+    const json = readFlag(args, "--json");
+    const db = await readDb(library);
+    const plan = await buildInvalidPdfPrunePlan(library, db);
+    let applied = null;
+    if (apply) applied = await applyInvalidPdfPrune(library, db, plan);
+    if (json) {
+      console.log(JSON.stringify({ plan, applied, library }, null, 2));
+    } else {
+      printInvalidPdfPrunePlan(plan, applied);
     }
     return 0;
   }
